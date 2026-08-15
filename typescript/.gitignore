@@ -1,0 +1,6 @@
+node_modules/
+.mewcode/config.yaml
+*.log
+*.pyc
+__pycache__/
+dist/
