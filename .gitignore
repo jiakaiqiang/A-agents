@@ -1,1 +1,9 @@
 node_modules/
+
+# Python 编译产物与工具缓存
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
