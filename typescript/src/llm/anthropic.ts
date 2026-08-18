@@ -36,7 +36,7 @@ export function buildAnthropicMessages(history: Message[]): Anthropic.MessagePar
 
     const previous = messages[messages.length - 1];
     if (previous?.role === "user" && typeof previous.content === "string") {
-      previous.content = `${previous.content}\n\n${entry.content}`;
+      previous.content = `${previous.content}\n\n${entry.content}`; // 这一步的场景就是用户连续输入多条信息  然后合并后再交给agent处理
     } else {
       messages.push({ role: "user", content: entry.content });
     }
@@ -178,8 +178,19 @@ export class AnthropicClient {
           const tool = toolsByIndex.get(event.index);
           if (tool) {
             let argumentsValue: Record<string, unknown> = {};
-            try { argumentsValue = JSON.parse(tool.json) as Record<string, unknown>; } catch { /* 留给后续工具循环处理 */ }
-            yield { type: "tool_call_complete", toolId: tool.id, toolName: tool.name, arguments: argumentsValue };
+            let parseError: string | undefined;
+            try {
+              argumentsValue = JSON.parse(tool.json) as Record<string, unknown>;
+            } catch (error) {
+              parseError = error instanceof Error ? error.message : String(error);
+            }
+            yield {
+              type: "tool_call_complete",
+              toolId: tool.id,
+              toolName: tool.name,
+              arguments: argumentsValue,
+              ...(parseError ? { parseError } : {}),
+            };
           }
         } else if (event.type === "message_delta") {
           stopReason = event.delta.stop_reason ?? stopReason;

@@ -1,6 +1,6 @@
 import { arch, platform } from "node:os";
 import { execSync } from "node:child_process";
-import type { EnvironmentContext, Section } from "./sections.js";
+import type { EnvironmentContext, Section, ToolSummary } from "./sections.js";
 import {
   doingTasksSection,
   environmentSection,
@@ -16,6 +16,7 @@ export interface BuildOptions {
   skills?: string;
   customInstructions?: string;
   memory?: string;
+  tools?: ToolSummary[];
 }
 
 export class PromptBuilder {
@@ -67,7 +68,7 @@ export function buildSystemPrompt(environment: EnvironmentContext, options: Buil
     .add(systemSection())
     .add(doingTasksSection())
     .add(executingActionsSection())
-    .add(usingToolsSection())
+    .add(usingToolsSection(options.tools ?? []))
     .add(toneStyleSection())
     .add(outputEfficiencySection())
     .add(environmentSection(environment));

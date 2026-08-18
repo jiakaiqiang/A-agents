@@ -5,6 +5,8 @@ import { getContextWindowAsync } from "../config/config.js";
 import { ConversationManager } from "../conversation/conversation.js";
 import { createClient, type LLMClient } from "../llm/client.js";
 import { buildSystemPrompt, detectEnvironment } from "../prompt/builder.js";
+import { runTurn } from "../agent/turn.js";
+import { createDefaultRegistry } from "../tools/index.js";
 import { ChatView, CommittedMessage, type ChatMessage } from "./chat.js";
 import { InputBox } from "./input.js";
 import { ProviderSelect } from "./provider-select.js";
@@ -37,6 +39,7 @@ export function App({
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
 
   const clientRef = useRef<LLMClient | null>(null);
+  const registryRef = useRef(createDefaultRegistry());
   const conversationRef = useRef(new ConversationManager());
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingTextRef = useRef("");
@@ -53,7 +56,14 @@ export function App({
   useEffect(() => {
     if (appState !== "chat" || !selectedProvider) return;
     let cancelled = false;
-    const systemPrompt = buildSystemPrompt(detectEnvironment(workDir, selectedProvider.model));
+    const toolSummaries = registryRef.current.list().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+    }));
+    const systemPrompt = buildSystemPrompt(
+      detectEnvironment(workDir, selectedProvider.model),
+      { tools: toolSummaries },
+    );
     clientRef.current = null;
     void createClient(selectedProvider, systemPrompt)
       .then((client) => {
@@ -74,38 +84,66 @@ export function App({
       return;
     }
 
-    let fullText = "";
+    let streamed = "";
     try {
-      for await (const event of client.stream(conversationRef.current, [], abortControllerRef.current?.signal)) {
-        if (event.type === "text_delta") {
-          fullText += event.text;
-          streamingTextRef.current = fullText;
-          setStreamingText(fullText);
-        } else if (event.type === "stream_end") {
-          setInputTokens(event.usage.inputTokens);
-          setOutputTokens(event.usage.outputTokens);
-        }
-      }
-      if (fullText) {
-        conversationRef.current.addAssistantMessage(fullText);
+      const outcome = await runTurn({
+        client,
+        conversation: conversationRef.current,
+        registry: registryRef.current,
+        protocol: selectedProvider.protocol,
+        workDir,
+        signal: abortControllerRef.current?.signal,
+        callbacks: {
+          onText: (delta) => {
+            streamed += delta;
+            streamingTextRef.current = streamed;
+            setStreamingText(streamed);
+          },
+          onThinking: () => undefined,
+          onToolStart: (toolId, _name, argSummary) => {
+            // 工具行先出现，执行结束后按 toolId 原地补摘要。
+            setMessages((previous) => [...previous, {
+              role: "tool_use",
+              toolId,
+              content: `${symbols.dot} ${argSummary}`,
+            }]);
+          },
+          onToolEnd: (toolId, result) => {
+            setMessages((previous) => previous.map((message) => message.toolId === toolId
+              ? { ...message, content: `${message.content} — ${result.summary}`, isError: !result.ok }
+              : message));
+          },
+          onNotice: (text, isError) => {
+            setMessages((previous) => [...previous, { role: "system", content: text, isError }]);
+          },
+          onUsage: (usage) => {
+            setInputTokens(usage.inputTokens);
+            setOutputTokens(usage.outputTokens);
+          },
+          onPhase: () => {
+            // 每阶段重置流式缓冲，避免第一次请求的文本与续答文本串在一起。
+            streamed = "";
+            streamingTextRef.current = "";
+            setStreamingText("");
+          },
+        },
+      });
+
+      if (outcome.finalText) {
         setMessages((previous) => {
-          const next: ChatMessage[] = [...previous, { role: "assistant", content: fullText }];
+          const next: ChatMessage[] = [...previous, { role: "assistant", content: outcome.finalText }];
           committedIndexRef.current = next.length;
           return next;
         });
-        setCompletionMark(randomCompletionVerb());
-      } else {
+        if (!outcome.aborted) setCompletionMark(randomCompletionVerb());
+      } else if (!outcome.aborted) {
         setError("模型返回了空内容，请检查 provider 协议、端点地址和模型名称。");
       }
+      setMessages((previous) => {
+        committedIndexRef.current = previous.length;
+        return previous;
+      });
     } catch (cause) {
-      if (fullText) {
-        conversationRef.current.addAssistantMessage(fullText);
-        setMessages((previous) => {
-          const next: ChatMessage[] = [...previous, { role: "assistant", content: fullText }];
-          committedIndexRef.current = next.length;
-          return next;
-        });
-      }
       const message = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
       setError(message);
     } finally {

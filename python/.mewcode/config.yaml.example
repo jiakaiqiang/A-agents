@@ -1,4 +1,4 @@
-# 将本文件复制为 .mewcode/config.yaml，并把 api_key 改为真实值。
+# 将本文件复制为 config.yaml，并把 api_key 改为真实值。
 providers:
   #- name: Anthropic
   #  protocol: anthropic

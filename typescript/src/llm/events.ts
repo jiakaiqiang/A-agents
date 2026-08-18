@@ -11,7 +11,13 @@ export type StreamEvent =
   | { type: "thinking_complete"; thinking: string; signature: string }
   | { type: "tool_call_start"; toolName: string; toolId: string }
   | { type: "tool_call_delta"; text: string }
-  | { type: "tool_call_complete"; toolId: string; toolName: string; arguments: Record<string, unknown> }
+  | {
+    type: "tool_call_complete";
+    toolId: string;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    parseError?: string;
+  }
   | { type: "stream_end"; stopReason: string; usage: UsageInfo };
 
 export const emptyUsage = (): UsageInfo => ({

@@ -39,11 +39,35 @@ export const executingActionsSection = (): Section => ({
   content: "# 执行动作\n涉及不可逆或对外操作前，请向用户确认。",
 });
 
-export const usingToolsSection = (): Section => ({
-  name: "UsingTools",
-  priority: 40,
-  content: "# 工具使用\n本次会话尚未配置工具调用能力，请直接以文本形式协助用户。",
-});
+export interface ToolSummary {
+  name: string;
+  description: string;
+}
+
+export const usingToolsSection = (tools: ToolSummary[] = []): Section => {
+  if (tools.length === 0) {
+    return {
+      name: "UsingTools",
+      priority: 40,
+      content: "# 工具使用\n本次会话尚未配置工具调用能力，请直接以文本形式协助用户。",
+    };
+  }
+
+  const list = tools.map((tool) => `- ${tool.name}：${tool.description}`).join("\n");
+  return {
+    name: "UsingTools",
+    priority: 40,
+    content: [
+      "# 工具使用",
+      "可用工具：",
+      list,
+      "约束：",
+      "- 每轮最多执行一个工具调用；需要多步操作时，先完成一步并在下一轮继续。",
+      "- 文件路径使用相对于工作目录的相对路径，不要访问工作目录之外的位置。",
+      "- 修改文件前先用 Read 确认当前内容，避免替换失败。",
+    ].join("\n"),
+  };
+};
 
 export const toneStyleSection = (): Section => ({
   name: "ToneStyle",

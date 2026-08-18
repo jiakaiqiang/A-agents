@@ -13,6 +13,7 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   isError?: boolean;
+  toolId?: string;
 }
 
 export function renderMarkdown(text: string): string {
@@ -31,7 +32,8 @@ function MessageBlock({ message }: { message: ChatMessage }) {
     return <Text color={message.isError ? brand.error : brand.muted}>{message.content}</Text>;
   }
   if (message.role === "tool_use" || message.role === "tool_result") {
-    return <Text color={brand.tool}>{message.content}</Text>;
+    // 工具行只展示摘要，不走 markdown 渲染，避免把工具输出当正文美化。
+    return <Text color={message.isError ? brand.error : brand.tool}>{message.content}</Text>;
   }
   return <Text color={message.isError ? brand.error : brand.assistant}>{renderMarkdown(message.content)}</Text>;
 }

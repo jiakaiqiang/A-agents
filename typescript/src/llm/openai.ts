@@ -112,8 +112,19 @@ export class OpenAIClient extends BaseOpenAIClient {
         } else if (event.type === "response.output_item.done" && event.item.type === "function_call") {
           const current = functionCalls.get(event.item.call_id) ?? { name: event.item.name, arguments: event.item.arguments };
           let argumentsValue: Record<string, unknown> = {};
-          try { argumentsValue = JSON.parse(current.arguments || event.item.arguments) as Record<string, unknown>; } catch { /* 工具参数无效时交由工具循环处理 */ }
-          yield { type: "tool_call_complete", toolId: event.item.call_id, toolName: current.name, arguments: argumentsValue };
+          let parseError: string | undefined;
+          try {
+            argumentsValue = JSON.parse(current.arguments || event.item.arguments) as Record<string, unknown>;
+          } catch (error) {
+            parseError = error instanceof Error ? error.message : String(error);
+          }
+          yield {
+            type: "tool_call_complete",
+            toolId: event.item.call_id,
+            toolName: current.name,
+            arguments: argumentsValue,
+            ...(parseError ? { parseError } : {}),
+          };
         } else if (event.type === "response.completed") {
           const response = event.response;
           stopReason = response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens"
@@ -179,8 +190,19 @@ export class OpenAICompatClient extends BaseOpenAIClient {
 
     for (const tool of toolCalls.values()) {
       let argumentsValue: Record<string, unknown> = {};
-      try { argumentsValue = JSON.parse(tool.arguments) as Record<string, unknown>; } catch { /* 交由后续工具循环处理 */ }
-      yield { type: "tool_call_complete", toolId: tool.id, toolName: tool.name, arguments: argumentsValue };
+      let parseError: string | undefined;
+      try {
+        argumentsValue = JSON.parse(tool.arguments) as Record<string, unknown>;
+      } catch (error) {
+        parseError = error instanceof Error ? error.message : String(error);
+      }
+      yield {
+        type: "tool_call_complete",
+        toolId: tool.id,
+        toolName: tool.name,
+        arguments: argumentsValue,
+        ...(parseError ? { parseError } : {}),
+      };
     }
     yield { type: "stream_end", stopReason, usage };
   }
