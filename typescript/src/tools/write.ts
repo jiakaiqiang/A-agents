@@ -40,6 +40,7 @@ export const WriteTool: Tool = {
   name: "Write",
   description: "创建或覆盖写入文本文件；不存在的父目录会自动创建。",
   parameters: schema,
+  readOnly: false,
   callSummary: (args) => `Write(${stringArg(args, "file_path")})`,
   execute,
 };

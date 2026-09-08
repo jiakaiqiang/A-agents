@@ -3,6 +3,11 @@ import type { Tool } from "./types.js";
 
 export type ToolDefinition = Record<string, unknown>;
 
+export interface DefinitionOptions {
+  /** 只导出无副作用的工具，用于计划模式。 */
+  readOnlyOnly?: boolean;
+}
+
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
@@ -22,8 +27,14 @@ export class ToolRegistry {
     return [...this.tools.values()];
   }
 
-  definitionsFor(protocol: ProviderProtocol): ToolDefinition[] {
-    return this.list().map((tool) => {
+  /** 无副作用工具子集；计划模式的可用工具与并发批的成员都由此派生。 */
+  listReadOnly(): Tool[] {
+    return this.list().filter((tool) => tool.readOnly);
+  }
+
+  definitionsFor(protocol: ProviderProtocol, options?: DefinitionOptions): ToolDefinition[] {
+    const source = options?.readOnlyOnly ? this.listReadOnly() : this.list();
+    return source.map((tool) => {
       if (protocol === "anthropic") {
         return {
           name: tool.name,

@@ -77,6 +77,7 @@ export const EditTool: Tool = {
   name: "Edit",
   description: "在文本文件中精确替换原文片段，默认要求原文恰好匹配一次，可选全量替换。",
   parameters: schema,
+  readOnly: false,
   callSummary: (args) => `Edit(${stringArg(args, "file_path")})`,
   execute,
 };

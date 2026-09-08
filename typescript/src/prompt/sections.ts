@@ -1,3 +1,5 @@
+import type { AgentMode } from "../agent/events.js";
+
 export interface EnvironmentContext {
   workDir: string;
   os: string;
@@ -44,7 +46,7 @@ export interface ToolSummary {
   description: string;
 }
 
-export const usingToolsSection = (tools: ToolSummary[] = []): Section => {
+export const usingToolsSection = (tools: ToolSummary[] = [], mode: AgentMode = "execute"): Section => {
   if (tools.length === 0) {
     return {
       name: "UsingTools",
@@ -54,19 +56,28 @@ export const usingToolsSection = (tools: ToolSummary[] = []): Section => {
   }
 
   const list = tools.map((tool) => `- ${tool.name}：${tool.description}`).join("\n");
-  return {
-    name: "UsingTools",
-    priority: 40,
-    content: [
-      "# 工具使用",
-      "可用工具：",
-      list,
-      "约束：",
-      "- 每轮最多执行一个工具调用；需要多步操作时，先完成一步并在下一轮继续。",
-      "- 文件路径使用相对于工作目录的相对路径，不要访问工作目录之外的位置。",
-      "- 修改文件前先用 Read 确认当前内容，避免替换失败。",
-    ].join("\n"),
-  };
+  const lines = [
+    "# 工具使用",
+    "可用工具：",
+    list,
+    "约束：",
+    "- 可以在一轮内连续调用多个工具，根据每次结果决定下一步，直到任务完成。",
+    "- 文件路径使用相对于工作目录的相对路径，不要访问工作目录之外的位置。",
+    "- 修改文件前先用 Read 确认当前内容，避免替换失败。",
+  ];
+
+  if (mode === "plan") {
+    lines.push(
+      "",
+      "# 计划模式",
+      "当前处于计划模式，只有读类工具可用：",
+      "- 只能读取和检索信息，不要尝试修改文件或执行命令。",
+      "- 先把需要了解的信息读全，然后产出一份可执行的计划文本。",
+      "- 用户切换到执行模式后才动手改动。",
+    );
+  }
+
+  return { name: "UsingTools", priority: 40, content: lines.join("\n") };
 };
 
 export const toneStyleSection = (): Section => ({

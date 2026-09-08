@@ -114,6 +114,7 @@ export const GrepTool: Tool = {
   name: "Grep",
   description: "使用正则表达式搜索工作目录内文件内容，返回文件路径、行号和命中行。",
   parameters: schema,
+  readOnly: true,
   callSummary: (args) => `Grep(${JSON.stringify(stringArg(args, "pattern"))})`,
   execute,
 };

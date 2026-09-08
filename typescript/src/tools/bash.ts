@@ -146,6 +146,7 @@ export const BashTool: Tool = {
   name: "Bash",
   description: "在当前工作目录下执行 shell 命令，返回标准输出、标准错误和退出码。",
   parameters: schema,
+  readOnly: false,
   callSummary: (args) => `Bash(${redact(stringArg(args, "command")).replace(/[\r\n]+/g, " ").slice(0, 72)})`,
   execute,
 };

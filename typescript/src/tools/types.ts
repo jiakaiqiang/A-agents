@@ -22,7 +22,8 @@ export type ToolErrorKind =
   | "timeout"
   | "exec_failed"
   | "unknown_tool"
-  | "unsupported";
+  | "unsupported"
+  | "cancelled"; // 批次被中断，该调用未执行
 
 export interface ToolResult {
   ok: boolean;
@@ -41,6 +42,8 @@ export interface Tool {
   readonly name: string;
   readonly description: string;
   readonly parameters: JSONSchemaObject;
+  /** 无副作用：可与同批工具并发执行，且计划模式下可用。 */
+  readonly readOnly: boolean;
   /** 工具行展示用的调用摘要，例如 Read(src/x.ts)。 */
   callSummary(args: Record<string, unknown>): string;
   execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;

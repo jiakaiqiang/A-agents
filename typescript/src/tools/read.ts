@@ -65,6 +65,7 @@ export const ReadTool: Tool = {
   name: "Read",
   description: "读取文本文件的内容，返回带行号的文本（1-indexed）。",
   parameters: schema,
+  readOnly: true,
   callSummary: (args) => `Read(${stringArg(args, "file_path")})`,
   execute,
 };

@@ -51,6 +51,7 @@ export const GlobTool: Tool = {
   name: "Glob",
   description: "按 glob 模式查找工作目录内的文件，自动忽略依赖和构建产物目录。",
   parameters: schema,
+  readOnly: true,
   callSummary: (args) => `Glob(${JSON.stringify(stringArg(args, "pattern"))})`,
   execute,
 };

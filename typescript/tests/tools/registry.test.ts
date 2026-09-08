@@ -50,6 +50,20 @@ describe("ToolRegistry", () => {
     expect(result.errorKind).toBe("unknown_tool");
   });
 
+  test("只读过滤只导出读类工具", () => {
+    const registry = createDefaultRegistry();
+    expect(registry.listReadOnly().map((tool) => tool.name)).toEqual(["Read", "Glob", "Grep"]);
+    expect(registry.list().filter((tool) => !tool.readOnly).map((tool) => tool.name))
+      .toEqual(["Write", "Edit", "Bash"]);
+
+    for (const protocol of ["anthropic", "openai", "openai-compat"] as const) {
+      const definitions = registry.definitionsFor(protocol, { readOnlyOnly: true });
+      expect(definitions).toHaveLength(3);
+      expect(names(definitions, protocol)).toEqual(["Read", "Glob", "Grep"]);
+      expect(registry.definitionsFor(protocol)).toHaveLength(6);
+    }
+  });
+
   test("重复登记在开发期抛错", () => {
     const registry = new ToolRegistry();
     registry.register(createDefaultRegistry().get("Read")!);
@@ -65,6 +79,7 @@ const fakeTool: Tool = {
     properties: { value: { type: "string", description: "value" } },
     required: ["value"],
   },
+  readOnly: true,
   callSummary: () => "Fake()",
   async execute(args) {
     return { ok: true, content: String(args.value), summary: String(args.value) };

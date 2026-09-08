@@ -1,5 +1,6 @@
 import { arch, platform } from "node:os";
 import { execSync } from "node:child_process";
+import type { AgentMode } from "../agent/events.js";
 import type { EnvironmentContext, Section, ToolSummary } from "./sections.js";
 import {
   doingTasksSection,
@@ -17,6 +18,7 @@ export interface BuildOptions {
   customInstructions?: string;
   memory?: string;
   tools?: ToolSummary[];
+  mode?: AgentMode;
 }
 
 export class PromptBuilder {
@@ -68,7 +70,7 @@ export function buildSystemPrompt(environment: EnvironmentContext, options: Buil
     .add(systemSection())
     .add(doingTasksSection())
     .add(executingActionsSection())
-    .add(usingToolsSection(options.tools ?? []))
+    .add(usingToolsSection(options.tools ?? [], options.mode ?? "execute"))
     .add(toneStyleSection())
     .add(outputEfficiencySection())
     .add(environmentSection(environment));
