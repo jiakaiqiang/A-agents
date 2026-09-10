@@ -112,7 +112,7 @@ async function execute(args: Record<string, unknown>, context: ToolContext): Pro
 
 export const GrepTool: Tool = {
   name: "Grep",
-  description: "使用正则表达式搜索工作目录内文件内容，返回文件路径、行号和命中行。",
+  description: "使用正则表达式搜索工作目录内文件内容，返回文件路径、行号和命中行。搜索内容用本工具，不要用 Bash 拼 grep、rg。",
   parameters: schema,
   readOnly: true,
   callSummary: (args) => `Grep(${JSON.stringify(stringArg(args, "pattern"))})`,

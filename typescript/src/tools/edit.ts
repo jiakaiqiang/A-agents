@@ -75,7 +75,7 @@ function execute(args: Record<string, unknown>, context: ToolContext): Promise<T
 
 export const EditTool: Tool = {
   name: "Edit",
-  description: "在文本文件中精确替换原文片段，默认要求原文恰好匹配一次，可选全量替换。",
+  description: "在文本文件中精确替换原文片段，默认要求原文恰好匹配一次，可选全量替换。编辑前必须先用 Read 确认当前内容，old_string 要照原文逐字节写。文件路径使用相对于工作目录的相对路径。",
   parameters: schema,
   readOnly: false,
   callSummary: (args) => `Edit(${stringArg(args, "file_path")})`,

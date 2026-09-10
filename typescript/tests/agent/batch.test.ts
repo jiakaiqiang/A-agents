@@ -8,6 +8,7 @@ import type { ToolResultBlock } from "../../src/conversation/conversation.js";
 import { createDefaultRegistry } from "../../src/tools/index.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import { ok, type Tool } from "../../src/tools/types.js";
+import { bypassGate } from "../permission/helpers.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -160,7 +161,8 @@ describe("runBatches", () => {
     const batches = planBatches(calls, registry);
     expect(batches.map((batch) => batch.concurrent)).toEqual([false, true]);
 
-    const { results } = await drain(runBatches(batches, registry, { workDir }));
+    // 写类调用要过权限判定，这里给放行档 Gate，专注验证批次间的副作用可见性。
+    const { results } = await drain(runBatches(batches, registry, { workDir, permission: bypassGate() }));
     expect(results[0]!.isError).toBeFalsy();
     expect(results[1]!.content).toContain("新内容");
   });

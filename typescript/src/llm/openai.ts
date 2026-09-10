@@ -6,8 +6,10 @@ import type { ProviderConfig } from "../config/config.js";
 import { getMaxOutputTokens, resolveAPIKey } from "../config/config.js";
 import { AuthenticationError, ContextTooLongError, LLMError, NetworkError, RateLimitError } from "./errors.js";
 import { emptyUsage, type StreamEvent } from "./events.js";
+import type { SystemPromptSegments } from "../prompt/builder.js";
+import type { StreamOptions } from "./client.js";
 
-export function buildOpenAIInput(history: Message[]): ResponseInput {
+export function buildOpenAIInput(history: Message[], reminders: string[] = []): ResponseInput {
   const input: Array<Record<string, unknown>> = [];
   for (const entry of history) {
     if (entry.role === "assistant" && entry.toolUses?.length) {
@@ -23,10 +25,15 @@ export function buildOpenAIInput(history: Message[]): ResponseInput {
       input.push({ role: entry.role, content: entry.content });
     }
   }
+  // OpenAI 协议不要求角色交替，补充指令直接追加成末尾 user 消息即可。
+  if (reminders.length) input.push({ role: "user", content: reminders.join("\n\n") });
   return input as unknown as ResponseInput;
 }
 
-export function buildChatCompletionMessages(history: Message[]): ChatCompletionMessageParam[] {
+export function buildChatCompletionMessages(
+  history: Message[],
+  reminders: string[] = [],
+): ChatCompletionMessageParam[] {
   const messages: ChatCompletionMessageParam[] = [];
   for (const entry of history) {
     if (entry.role === "assistant" && entry.toolUses?.length) {
@@ -47,6 +54,7 @@ export function buildChatCompletionMessages(history: Message[]): ChatCompletionM
       messages.push({ role: entry.role, content: entry.content } as ChatCompletionMessageParam);
     }
   }
+  if (reminders.length) messages.push({ role: "user", content: reminders.join("\n\n") });
   return messages;
 }
 
@@ -69,11 +77,22 @@ abstract class BaseOpenAIClient {
   protected readonly client: OpenAI;
   protected readonly maxOutputTokens: number;
 
-  constructor(protected readonly config: ProviderConfig, protected readonly systemPrompt: string) {
+  /**
+   * OpenAI 系两种协议都是自动前缀缓存，不需要显式断点，
+   * 所以两段提示词在这里拼回一条 system 消息：拆成两条对缓存没有收益，
+   * 反而有些兼容网关只认第一条 system。
+   */
+  protected readonly systemPrompt: string;
+
+  constructor(protected readonly config: ProviderConfig, segments: SystemPromptSegments) {
     const apiKey = resolveAPIKey(config);
     if (!apiKey) throw new AuthenticationError("缺少 OpenAI API 密钥：请设置 api_key 或 OPENAI_API_KEY。");
     this.client = new OpenAI({ apiKey, baseURL: config.base_url });
     this.maxOutputTokens = getMaxOutputTokens(config);
+    this.systemPrompt = [segments.stable, segments.environment]
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   setMaxOutputTokens(_tokens: number): void {
@@ -82,7 +101,7 @@ abstract class BaseOpenAIClient {
 }
 
 export class OpenAIClient extends BaseOpenAIClient {
-  async *stream(history: Message[], tools: Record<string, unknown>[], signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+  async *stream(history: Message[], tools: Record<string, unknown>[], options: StreamOptions = {}): AsyncGenerator<StreamEvent> {
     const usage = emptyUsage();
     let stopReason = "end_turn";
     const functionCalls = new Map<string, { name: string; arguments: string }>();
@@ -92,12 +111,12 @@ export class OpenAIClient extends BaseOpenAIClient {
         model: this.config.model,
         input: [
           { role: "system", content: this.systemPrompt },
-          ...(buildOpenAIInput(history) as unknown as Array<Record<string, unknown>>),
+          ...(buildOpenAIInput(history, options.reminders ?? []) as unknown as Array<Record<string, unknown>>),
         ] as unknown as ResponseInput,
         stream: true,
         max_output_tokens: this.maxOutputTokens,
         ...(tools.length ? { tools: tools as never[] } : {}),
-      }, { signal });
+      }, { signal: options.signal });
 
       for await (const event of stream) {
         if (event.type === "response.output_text.delta") {
@@ -144,7 +163,7 @@ export class OpenAIClient extends BaseOpenAIClient {
 }
 
 export class OpenAICompatClient extends BaseOpenAIClient {
-  async *stream(history: Message[], tools: Record<string, unknown>[], signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+  async *stream(history: Message[], tools: Record<string, unknown>[], options: StreamOptions = {}): AsyncGenerator<StreamEvent> {
     const usage = emptyUsage();
     let stopReason = "end_turn";
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
@@ -152,12 +171,15 @@ export class OpenAICompatClient extends BaseOpenAIClient {
     try {
       const stream = await this.client.chat.completions.create({
         model: this.config.model,
-        messages: [{ role: "system", content: this.systemPrompt }, ...buildChatCompletionMessages(history)],
+        messages: [
+          { role: "system", content: this.systemPrompt },
+          ...buildChatCompletionMessages(history, options.reminders ?? []),
+        ],
         stream: true,
         stream_options: { include_usage: true },
         max_tokens: this.maxOutputTokens,
         ...(tools.length ? { tools: tools as never[] } : {}),
-      }, { signal });
+      }, { signal: options.signal });
 
       for await (const chunk of stream) {
         if (chunk.usage) {

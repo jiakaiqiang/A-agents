@@ -1,15 +1,15 @@
 import { arch, platform } from "node:os";
 import { execSync } from "node:child_process";
-import type { AgentMode } from "../agent/events.js";
+import { PROMPT_PRIORITY } from "../tools/limits.js";
 import type { EnvironmentContext, Section, ToolSummary } from "./sections.js";
 import {
-  doingTasksSection,
+  behaviorSection,
+  codeStyleSection,
   environmentSection,
-  executingActionsSection,
   identitySection,
-  outputEfficiencySection,
-  systemSection,
-  toneStyleSection,
+  outputStyleSection,
+  safetySection,
+  taskModeSection,
   usingToolsSection,
 } from "./sections.js";
 
@@ -17,8 +17,14 @@ export interface BuildOptions {
   skills?: string;
   customInstructions?: string;
   memory?: string;
+  /** 始终传全量工具，不随模式过滤，否则切模式会让稳定段的字节发生变化。 */
   tools?: ToolSummary[];
-  mode?: AgentMode;
+}
+
+/** 系统提示词的两个缓存单元：稳定段整个会话不变，环境段按天、按模型变化。 */
+export interface SystemPromptSegments {
+  stable: string;
+  environment: string;
 }
 
 export class PromptBuilder {
@@ -64,21 +70,36 @@ export function detectEnvironment(workDir: string, model = ""): EnvironmentConte
   };
 }
 
-export function buildSystemPrompt(environment: EnvironmentContext, options: BuildOptions = {}): string {
-  const builder = new PromptBuilder()
+export function buildSystemPrompt(
+  environment: EnvironmentContext,
+  options: BuildOptions = {},
+): SystemPromptSegments {
+  const stable = new PromptBuilder()
     .add(identitySection())
-    .add(systemSection())
-    .add(doingTasksSection())
-    .add(executingActionsSection())
-    .add(usingToolsSection(options.tools ?? [], options.mode ?? "execute"))
-    .add(toneStyleSection())
-    .add(outputEfficiencySection())
-    .add(environmentSection(environment));
+    .add(safetySection())
+    .add(taskModeSection())
+    .add(behaviorSection())
+    .add(codeStyleSection())
+    .add(usingToolsSection(options.tools ?? []))
+    .add(outputStyleSection());
 
-  if (options.skills?.trim()) builder.add({ name: "Skills", priority: 90, content: options.skills });
   if (options.customInstructions?.trim()) {
-    builder.add({ name: "CustomInstructions", priority: 95, content: options.customInstructions });
+    stable.add({
+      name: "CustomInstructions",
+      priority: PROMPT_PRIORITY.customInstructions,
+      content: options.customInstructions,
+    });
   }
-  if (options.memory?.trim()) builder.add({ name: "Memory", priority: 100, content: options.memory });
-  return builder.build();
+  if (options.skills?.trim()) {
+    stable.add({ name: "Skills", priority: PROMPT_PRIORITY.skills, content: options.skills });
+  }
+  if (options.memory?.trim()) {
+    stable.add({ name: "Memory", priority: PROMPT_PRIORITY.memory, content: options.memory });
+  }
+
+  // 环境信息单独成段：它按天、按模型变化，混进稳定段会让整个前缀每天失效一次。
+  return {
+    stable: stable.build(),
+    environment: new PromptBuilder().add(environmentSection(environment)).build(),
+  };
 }

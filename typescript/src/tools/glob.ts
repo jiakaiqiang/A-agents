@@ -49,7 +49,7 @@ async function execute(args: Record<string, unknown>, context: ToolContext): Pro
 
 export const GlobTool: Tool = {
   name: "Glob",
-  description: "按 glob 模式查找工作目录内的文件，自动忽略依赖和构建产物目录。",
+  description: "按 glob 模式查找工作目录内的文件，自动忽略依赖和构建产物目录。返回的是相对于工作目录的相对路径。查找文件用本工具，不要用 Bash 拼 find、ls。",
   parameters: schema,
   readOnly: true,
   callSummary: (args) => `Glob(${JSON.stringify(stringArg(args, "pattern"))})`,

@@ -63,7 +63,7 @@ function execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolR
 
 export const ReadTool: Tool = {
   name: "Read",
-  description: "读取文本文件的内容，返回带行号的文本（1-indexed）。",
+  description: "读取文本文件的内容，返回带行号的文本（1-indexed）。文件路径使用相对于工作目录的相对路径。查看文件内容用本工具，不要用 Bash 拼 cat、head、tail。",
   parameters: schema,
   readOnly: true,
   callSummary: (args) => `Read(${stringArg(args, "file_path")})`,

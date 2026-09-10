@@ -1,3 +1,4 @@
+import { decide } from "../permission/decide.js";
 import { redact } from "./redact.js";
 import { validate } from "./schema.js";
 import { SUMMARY_MAX_CHARS, TOOL_RESULT_MAX_CHARS } from "./limits.js";
@@ -19,7 +20,7 @@ function truncateSummary(summary: string): string {
   return value.length <= SUMMARY_MAX_CHARS ? value : `${value.slice(0, SUMMARY_MAX_CHARS - 1)}…`;
 }
 
-/** 工具调用唯一入口：查找、校验、执行、脱敏、截断。 */
+/** 工具调用唯一入口：查找、校验、权限判定、执行、脱敏、截断。 */
 export async function runTool(
   registry: ToolRegistry,
   name: string,
@@ -32,6 +33,13 @@ export async function runTool(
   const validation = validate(tool.parameters, args);
   if (!validation.ok) {
     return fail("invalid_params", validation.errors.join("；"));
+  }
+
+  // 权限判定在执行之前，拒绝时工具不得产生任何副作用（权限 spec F1、N1）。
+  // 用 validation.value 而非原始 args：拿到的是归一化后的参数。
+  const decision = await decide(tool, validation.value, context);
+  if (decision.verdict === "deny") {
+    return fail("permission_denied", decision.reason);
   }
 
   let result: ToolResult;

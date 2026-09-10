@@ -38,7 +38,7 @@ function execute(args: Record<string, unknown>, context: ToolContext): Promise<T
 
 export const WriteTool: Tool = {
   name: "Write",
-  description: "创建或覆盖写入文本文件；不存在的父目录会自动创建。",
+  description: "创建或覆盖写入文本文件；不存在的父目录会自动创建。写入已存在的文件前必须先用 Read 确认当前内容，否则会丢掉原有内容。文件路径使用相对于工作目录的相对路径。",
   parameters: schema,
   readOnly: false,
   callSummary: (args) => `Write(${stringArg(args, "file_path")})`,

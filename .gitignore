@@ -11,3 +11,6 @@ __pycache__/
 # 备份文件
 *.bak
 *.bak/
+
+# 权限系统的本地放行规则：承载个人信任决定，不入版本库
+.mewcode/config.local.yaml

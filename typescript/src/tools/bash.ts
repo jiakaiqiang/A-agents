@@ -144,7 +144,7 @@ function execute(args: Record<string, unknown>, context: ToolContext): Promise<T
 
 export const BashTool: Tool = {
   name: "Bash",
-  description: "在当前工作目录下执行 shell 命令，返回标准输出、标准错误和退出码。",
+  description: "在当前工作目录下执行 shell 命令，返回标准输出、标准错误和退出码。只用于确实需要跑命令的场景（构建、测试、git 等）：读文件用 Read、查文件用 Glob、搜内容用 Grep、改文件用 Edit 或 Write，不要用命令行拼凑。",
   parameters: schema,
   readOnly: false,
   callSummary: (args) => `Bash(${redact(stringArg(args, "command")).replace(/[\r\n]+/g, " ").slice(0, 72)})`,

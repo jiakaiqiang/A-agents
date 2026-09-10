@@ -1,3 +1,5 @@
+import type { PermissionGate } from "../permission/types.js";
+
 export interface JSONSchemaProperty {
   type: "string" | "number" | "integer" | "boolean" | "array" | "object";
   description: string;
@@ -23,7 +25,8 @@ export type ToolErrorKind =
   | "exec_failed"
   | "unknown_tool"
   | "unsupported"
-  | "cancelled"; // 批次被中断，该调用未执行
+  | "cancelled" // 批次被中断，该调用未执行
+  | "permission_denied"; // 权限判定拒绝，单列以便与越界、参数错误区分（权限 spec N4）
 
 export interface ToolResult {
   ok: boolean;
@@ -36,6 +39,8 @@ export interface ToolResult {
 export interface ToolContext {
   workDir: string; // 启动目录，工具操作的唯一根
   signal?: AbortSignal;
+  /** 权限判定所需的档位、规则与确认回调；缺省时需要确认的调用一律拒绝（权限 spec F1）。 */
+  permission?: PermissionGate;
 }
 
 export interface Tool {

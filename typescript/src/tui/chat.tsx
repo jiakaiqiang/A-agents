@@ -54,3 +54,27 @@ export function CommittedMessage({ message }: { message: ChatMessage }) {
     </Box>
   );
 }
+
+/**
+ * 启动横幅整个会话只写出一次，所以它属于静态区。
+ * 留在动态区的话每次重渲染都要重画一遍，长对话下会反复出现。
+ */
+export function Banner({
+  providerName,
+  model,
+  workDir,
+}: {
+  providerName: string;
+  model: string;
+  workDir: string;
+}) {
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      <Text color={brand.primary}> /\_/\</Text>
+      <Text color={brand.primary}>( o.o )</Text>
+      <Text color={brand.primary}> &gt; ^ &lt;</Text>
+      <Text color={brand.bright}>MewCode v0.1.0</Text>
+      <Text color={brand.muted}>{providerName} {symbols.separator} {model} {symbols.separator} {workDir}</Text>
+    </Box>
+  );
+}

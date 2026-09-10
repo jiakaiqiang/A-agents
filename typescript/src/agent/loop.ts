@@ -4,6 +4,7 @@ import type { LLMClient } from "../llm/client.js";
 import type { UsageInfo } from "../llm/events.js";
 import { emptyUsage } from "../llm/events.js";
 import { MAX_INVALID_ITERATIONS, MAX_ITERATIONS } from "../tools/limits.js";
+import type { PermissionGate } from "../permission/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { fail } from "../tools/types.js";
 import { planBatches, runBatches } from "./batch.js";
@@ -17,7 +18,11 @@ export interface LoopOptions {
   protocol: ProviderProtocol;
   workDir: string;
   mode: AgentMode;
+  /** 权限档位、规则与确认回调，原样透传给工具上下文（权限 spec F1）。 */
+  permission?: PermissionGate;
   signal?: AbortSignal;
+  /** 本轮挂在每次模型请求上的补充指令，只影响这一轮，不写入会话历史（spec F16）。 */
+  reminders?: string[];
   maxIterations?: number; // 缺省取 MAX_ITERATIONS，测试可覆盖
 }
 
@@ -65,7 +70,8 @@ function noticeText(reason: StopReason, iterations: number): string {
  * 直到模型不再请求工具或命中某个停止条件。事件流是唯一对外输出，不引用界面模块。
  */
 export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent> {
-  const { client, conversation, registry, protocol, workDir, mode, signal } = options;
+  const { client, conversation, registry, protocol, workDir, mode, permission, signal } = options;
+  const reminders = options.reminders ?? [];
   const limit = options.maxIterations ?? MAX_ITERATIONS;
 
   let iterations = 0;
@@ -101,12 +107,14 @@ export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent>
       iterations += 1;
       yield { type: "progress", iteration: iterations, phase: "model", toolsExecuted };
 
-      const tools = registry.definitionsFor(protocol, { readOnlyOnly: mode === "plan" });
-      const response = yield* collectStream(client, conversation, tools, signal);
+      // 全部工具都下发：计划档对改文件的约束改由权限层逐次确认承担，不再靠摘掉工具（权限 spec F19）。
+      const tools = registry.definitionsFor(protocol);
+      //进行流相应；补充指令每次迭代都挂，否则工具结果回灌后模式约束就断了
+      const response = yield* collectStream(client, conversation, tools, { signal, reminders });
       addUsage(accumulated, response.usage);
       yield { type: "usage", usage: { ...accumulated } };
       finalText = response.text;
-
+      //工具调用为空，说明模型不再请求工具，本轮自然完成（F5）。
       if (response.toolUses.length === 0) {
         if (finalText) conversation.addAssistantMessage(finalText);
         lastWriteWasToolResult = false;
@@ -131,7 +139,7 @@ export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent>
 
       const batches = planBatches(response.toolUses, registry);
       // runBatches 对每个调用都产出一条结果，results 与 toolUses 长度必然相等（F3）。
-      const results = yield* runBatches(batches, registry, { workDir, signal });
+      const results = yield* runBatches(batches, registry, { workDir, signal, permission });
       toolsExecuted += results.filter((item) => !item.isError).length;
       conversation.addToolResultMessage(results);
       lastWriteWasToolResult = true;

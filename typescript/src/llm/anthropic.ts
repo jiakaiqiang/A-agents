@@ -4,8 +4,10 @@ import type { ProviderConfig } from "../config/config.js";
 import { getContextWindow, getMaxOutputTokens, resolveAPIKey } from "../config/config.js";
 import { AuthenticationError, ContextTooLongError, LLMError, NetworkError, RateLimitError } from "./errors.js";
 import { emptyUsage, type StreamEvent, type UsageInfo } from "./events.js";
+import type { SystemPromptSegments } from "../prompt/builder.js";
+import type { StreamOptions } from "./client.js";
 
-export function buildAnthropicMessages(history: Message[]): Anthropic.MessageParam[] {
+export function buildAnthropicMessages(history: Message[], reminders: string[] = []): Anthropic.MessageParam[] {
   const messages: Anthropic.MessageParam[] = [];
   for (const entry of history) {
     if (entry.role === "system") continue;
@@ -41,7 +43,25 @@ export function buildAnthropicMessages(history: Message[]): Anthropic.MessagePar
       messages.push({ role: "user", content: entry.content });
     }
   }
+  appendReminders(messages, reminders);
   return messages;
+}
+
+/**
+ * 把补充指令挂到消息数组末尾，尽量贴近生成位置。
+ * 优先合并进末条 user 消息：Anthropic 协议要求 user/assistant 交替，硬推一条会报错。
+ */
+function appendReminders(messages: Anthropic.MessageParam[], reminders: string[]): void {
+  if (reminders.length === 0) return;
+  const text = reminders.join("\n\n");
+  const last = messages[messages.length - 1];
+  if (last?.role === "user") {
+    last.content = typeof last.content === "string"
+      ? `${last.content}\n\n${text}`
+      : [...last.content, { type: "text", text }];
+    return;
+  }
+  messages.push({ role: "user", content: text });
 }
 
 export function markLastUserTailForCache(messages: Anthropic.MessageParam[]): void {
@@ -51,6 +71,17 @@ export function markLastUserTailForCache(messages: Anthropic.MessageParam[]): vo
   if (last.type === "text") {
     Object.assign(last, { cache_control: { type: "ephemeral" } });
   }
+}
+
+/**
+ * 两个缓存断点：稳定段整个会话不变，环境段按天、按模型变化，各自独立成缓存单元。
+ * 抽成函数是为了能在测试里直接断言块数与缓存标记，不必发真实请求。
+ */
+export function buildSystemBlocks(segments: SystemPromptSegments): Anthropic.TextBlockParam[] {
+  return [
+    { type: "text", text: segments.stable, cache_control: { type: "ephemeral" } },
+    { type: "text", text: segments.environment, cache_control: { type: "ephemeral" } },
+  ];
 }
 
 export async function fetchModelContextWindow(config: ProviderConfig): Promise<number> {
@@ -102,7 +133,7 @@ export class AnthropicClient {
   private readonly maxOutputTokens: number;
   readonly contextWindow: number;
 
-  constructor(private readonly config: ProviderConfig, private readonly systemPrompt: string) {
+  constructor(private readonly config: ProviderConfig, private readonly segments: SystemPromptSegments) {
     const apiKey = resolveAPIKey(config);
     if (!apiKey) {
       throw new AuthenticationError("缺少 Anthropic API 密钥：请设置 api_key 或 ANTHROPIC_API_KEY。");
@@ -116,8 +147,8 @@ export class AnthropicClient {
     // 当前会话按 provider 配置固定上限；保留接口以便后续章节扩展。
   }
 
-  async *stream(history: Message[], tools: Record<string, unknown>[], signal?: AbortSignal): AsyncGenerator<StreamEvent> {
-    const messages = buildAnthropicMessages(history);
+  async *stream(history: Message[], tools: Record<string, unknown>[], options: StreamOptions = {}): AsyncGenerator<StreamEvent> {
+    const messages = buildAnthropicMessages(history, options.reminders ?? []);
     markLastUserTailForCache(messages);
     const usage = emptyUsage();
     let stopReason = "end_turn";
@@ -129,7 +160,7 @@ export class AnthropicClient {
         model: this.config.model,
         max_tokens: this.maxOutputTokens,
         stream: true,
-        system: [{ type: "text", text: this.systemPrompt, cache_control: { type: "ephemeral" } }],
+        system: buildSystemBlocks(this.segments),
         messages,
         ...(tools.length ? { tools: tools as unknown as Anthropic.Tool[] } : {}),
       };
@@ -139,7 +170,7 @@ export class AnthropicClient {
           : { thinking: { type: "enabled", budget_tokens: this.maxOutputTokens - 1 } });
       }
 
-      const stream = this.client.messages.stream(params, { signal });
+      const stream = this.client.messages.stream(params, { signal: options.signal });
       for await (const event of stream) {
         if (event.type === "message_start") {
           usage.inputTokens = event.message.usage.input_tokens;

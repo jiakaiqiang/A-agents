@@ -1,5 +1,5 @@
 import type { ConversationManager, ThinkingBlock, ToolUseBlock } from "../conversation/conversation.js";
-import type { LLMClient } from "../llm/client.js";
+import type { LLMClient, StreamOptions } from "../llm/client.js";
 import type { UsageInfo } from "../llm/events.js";
 import { emptyUsage } from "../llm/events.js";
 import type { AgentEvent } from "./events.js";
@@ -25,7 +25,7 @@ export async function* collectStream(
   client: LLMClient,
   conversation: ConversationManager,
   tools: Record<string, unknown>[],
-  signal: AbortSignal | undefined,
+  options: StreamOptions = {},
 ): AsyncGenerator<AgentEvent, CollectedResponse> {
   let text = "";
   const thinkingBlocks: ThinkingBlock[] = [];
@@ -34,7 +34,7 @@ export async function* collectStream(
   let stopReason = "end_turn";
 
   try {
-    for await (const event of client.stream(conversation, tools, signal)) {
+    for await (const event of client.stream(conversation, tools, options)) {
       switch (event.type) {
         case "text_delta":
           text += event.text;

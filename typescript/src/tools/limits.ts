@@ -24,6 +24,29 @@ export const MAX_INVALID_ITERATIONS = 3;
 // 并发批最大并发度，超出时切成多个并发子批依次跑，避免耗尽文件句柄。
 export const MAX_CONCURRENT_TOOLS = 8;
 
+// ── 系统提示词与运行期注入（spec N8）──
+// 模块优先级，升序拼装：固定模块在前，可选模块居中，环境信息在最末。
+export const PROMPT_PRIORITY = {
+  identity: 0,
+  safety: 10,
+  taskMode: 20,
+  behavior: 30,
+  codeStyle: 40,
+  usingTools: 50,
+  outputStyle: 60,
+  customInstructions: 70,
+  skills: 80,
+  memory: 90,
+  environment: 100,
+} as const;
+
+// 计划模式完整版指令的重复间隔轮数：第 1 轮与之后每隔 5 轮注入完整版，其余轮次精简版。
+export const PLAN_REMINDER_INTERVAL = 5;
+
+// 最小可缓存前缀长度门槛，按整个请求前缀（工具定义 + 系统提示词）计算。
+// Anthropic Opus / Sonnet 为 1024，Haiku 为 2048；更换模型时需复核此值。
+export const CACHE_MIN_PREFIX_TOKENS = 1024;
+
 // Glob / Grep 统一忽略的目录名，避免把依赖与产物塞进上下文。
 export const IGNORED_DIRS = new Set([
   ".git",

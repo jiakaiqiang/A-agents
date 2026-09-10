@@ -31,7 +31,7 @@ async function drain(
 }
 
 function run(events: StreamEvent[], thrown?: Error) {
-  return drain(collectStream(scriptedClient(events, thrown), new ConversationManager(), [], undefined));
+  return drain(collectStream(scriptedClient(events, thrown), new ConversationManager(), [], {}));
 }
 
 function abortError(): Error {

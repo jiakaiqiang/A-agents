@@ -355,12 +355,13 @@ describe("runLoop 事件流", () => {
 });
 
 describe("runLoop 计划模式", () => {
-  test("AC27/AC28 计划模式只下发只读工具定义", async () => {
+  test("计划模式同样下发全部工具定义（权限 spec F19、AC18）", async () => {
+    // 计划模式不再摘掉写类工具，对改文件的约束改由权限层逐次确认承担。
     const planSpy = scriptedClient([[{ type: "text_delta", text: "计划如下" }, end()]]);
     await collect(planSpy.client, { mode: "plan" });
-    expect(planSpy.receivedTools[0]).toHaveLength(3);
+    expect(planSpy.receivedTools[0]).toHaveLength(6);
     expect(planSpy.receivedTools[0]!.map((definition) => (definition.function as { name: string }).name))
-      .toEqual(["Read", "Glob", "Grep"]);
+      .toEqual(["Read", "Write", "Edit", "Bash", "Glob", "Grep"]);
 
     const execSpy = scriptedClient([[{ type: "text_delta", text: "开始改" }, end()]]);
     await collect(execSpy.client, { mode: "execute" });
@@ -378,6 +379,6 @@ describe("runLoop 计划模式", () => {
     expect(done.reason).toBe("complete");
     expect(done.iterations).toBe(3);
     expect(done.finalText).toBe("这是计划");
-    expect(spy.receivedTools.every((tools) => tools.length === 3)).toBe(true);
+    expect(spy.receivedTools.every((tools) => tools.length === 6)).toBe(true);
   });
 });
