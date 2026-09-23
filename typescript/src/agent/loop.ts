@@ -3,8 +3,10 @@ import type { ConversationManager } from "../conversation/conversation.js";
 import type { LLMClient } from "../llm/client.js";
 import type { UsageInfo } from "../llm/events.js";
 import { emptyUsage } from "../llm/events.js";
+import { lazyCatalogReminder } from "../prompt/reminder.js";
 import { MAX_INVALID_ITERATIONS, MAX_ITERATIONS } from "../tools/limits.js";
 import type { PermissionGate } from "../permission/types.js";
+import type { Compactor } from "../context/compactor.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { fail } from "../tools/types.js";
 import { planBatches, runBatches } from "./batch.js";
@@ -20,6 +22,8 @@ export interface LoopOptions {
   mode: AgentMode;
   /** 权限档位、规则与确认回调，原样透传给工具上下文（权限 spec F1）。 */
   permission?: PermissionGate;
+  /** 上下文压缩编排器；缺省时全部压缩逻辑跳过（上下文 spec F6）。 */
+  compactor?: Compactor;
   signal?: AbortSignal;
   /** 本轮挂在每次模型请求上的补充指令，只影响这一轮，不写入会话历史（spec F16）。 */
   reminders?: string[];
@@ -71,7 +75,7 @@ function noticeText(reason: StopReason, iterations: number): string {
  */
 export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent> {
   const { client, conversation, registry, protocol, workDir, mode, permission, signal } = options;
-  const reminders = options.reminders ?? [];
+  const baseReminders = options.reminders ?? [];
   const limit = options.maxIterations ?? MAX_ITERATIONS;
 
   let iterations = 0;
@@ -104,14 +108,27 @@ export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent>
     while (iterations < limit) {
       if (signal?.aborted) return yield* finish("cancelled");
 
+      // 请求前两层检查（上下文 spec F6）：先轻量预防已在结果回灌前做，这里做整体兜底判断。
+      const compactionNotice = await options.compactor?.maintain(signal);
+      if (compactionNotice) yield { type: "compaction", text: compactionNotice };
+
       iterations += 1;
       yield { type: "progress", iteration: iterations, phase: "model", toolsExecuted };
 
       // 全部工具都下发：计划档对改文件的约束改由权限层逐次确认承担，不再靠摘掉工具（权限 spec F19）。
       const tools = registry.definitionsFor(protocol);
+      // 延迟目录每轮重算（spec LF4）：懒池随发现收缩，空池不注入。
+      const lazyEntries = registry.lazyNames().map((name) => ({
+        name,
+        description: registry.getLazy(name)?.description ?? name,
+      }));
+      const catalog = lazyCatalogReminder(lazyEntries);
+      const reminders = catalog ? [...baseReminders, catalog] : baseReminders;
       //进行流相应；补充指令每次迭代都挂，否则工具结果回灌后模式约束就断了
       const response = yield* collectStream(client, conversation, tools, { signal, reminders });
       addUsage(accumulated, response.usage);
+      // 锚定真实 usage：估算器后续只对增量字符折算（上下文 spec F1）。
+      options.compactor?.noteUsage(conversation.chars(), response.usage.inputTokens);
       yield { type: "usage", usage: { ...accumulated } };
       finalText = response.text;
       //工具调用为空，说明模型不再请求工具，本轮自然完成（F5）。
@@ -141,7 +158,9 @@ export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent>
       // runBatches 对每个调用都产出一条结果，results 与 toolUses 长度必然相等（F3）。
       const results = yield* runBatches(batches, registry, { workDir, signal, permission });
       toolsExecuted += results.filter((item) => !item.isError).length;
-      conversation.addToolResultMessage(results);
+      // 轻量预防（上下文 spec F2/F3）：结果写入历史前决定存盘或内联。
+      const processed = options.compactor ? await options.compactor.applyLightPrevention(results) : results;
+      conversation.addToolResultMessage(processed);
       lastWriteWasToolResult = true;
 
       // 全部调用都指向未知工具才算无效迭代；混合情况说明模型仍在推进任务（F8）。

@@ -20,14 +20,36 @@ function truncateSummary(summary: string): string {
   return value.length <= SUMMARY_MAX_CHARS ? value : `${value.slice(0, SUMMARY_MAX_CHARS - 1)}…`;
 }
 
-/** 工具调用唯一入口：查找、校验、权限判定、执行、脱敏、截断。 */
+/** 工具调用的唯一入口：查找、（安全网补载）、校验、权限判定、执行、脱敏、截断。 */
 export async function runTool(
   registry: ToolRegistry,
   name: string,
   args: Record<string, unknown>,
   context: ToolContext,
 ): Promise<ToolResult> {
-  const tool = registry.get(name);
+  let tool = registry.get(name);
+
+  // 安全网（spec LF5）：registry 未命中先查懒池自动补载——
+  // 模型可能跳过 toolSearch 直接按目录名调用（训练习性），不在此拦截会白丢一轮。
+  if (!tool && registry.getLazy(name)) {
+    const discovered = await registry.discover(name);
+    if (discovered) {
+      // 参数能过 schema 校验 → 当次直接执行（LF5a/LA6）；
+      // 过不了 → 走下方正常校验失败路径，错误信息附 schema（LF5b/LA7）。
+      const precheck = validate(discovered.parameters, args);
+      if (precheck.ok) {
+        tool = discovered;
+      } else {
+        const props = Object.entries(discovered.parameters.properties)
+          .map(([key, prop]) => `  - ${key}（${prop.type}${discovered.parameters.required.includes(key) ? "，必填" : "，可选"}）：${prop.description}`)
+          .join("\n");
+        return fail(
+          "invalid_params",
+          `工具 ${name} 已按目录自动加载，但参数不符：${precheck.errors.join("；")}\n完整定义：\n${props || "（无参数）"}\n请按上述 schema 重发调用。`,
+        );
+      }
+    }
+  }
   if (!tool) return fail("unknown_tool", `未知工具：${name}`);
 
   const validation = validate(tool.parameters, args);

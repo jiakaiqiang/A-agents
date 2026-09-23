@@ -80,6 +80,17 @@ export class ConversationManager {
     return this.history.length;
   }
 
+  /** 全历史字符总数：Token 估算锚点与压缩判断共用此口径（上下文 spec F1）。 */
+  chars(): number {
+    let total = 0;
+    for (const message of this.history) {
+      total += message.content.length;
+      for (const result of message.toolResults ?? []) total += result.content.length;
+      for (const use of message.toolUses ?? []) total += JSON.stringify(use.arguments).length;
+    }
+    return total;
+  }
+
   truncateTo(index: number): void {
     this.history = this.history.slice(0, Math.max(0, index));
   }

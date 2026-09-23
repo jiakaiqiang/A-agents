@@ -14,3 +14,6 @@ __pycache__/
 
 # 权限系统的本地放行规则：承载个人信任决定，不入版本库
 .mewcode/config.local.yaml
+
+# 工具结果存盘目录（上下文管理第一层预防）
+**/.mewcode/tool-outputs/

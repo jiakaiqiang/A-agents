@@ -10,6 +10,36 @@ export function wrapReminder(content: string): string {
   return `<system-reminder>\n${content.trim()}\n</system-reminder>`;
 }
 
+/** 目录单行描述的截断上限（LN4）。 */
+const CATALOG_DESC_MAX_CHARS = 80;
+
+/** 目录条目的最小形状：渲染只需要名字与描述。 */
+export interface LazyCatalogEntry {
+  name: string;
+  description: string;
+}
+
+/**
+ * 延迟工具目录 reminder（spec LF4）：只列名字与一句话描述。
+ * 每轮由 loop 重算——懒池随发现收缩，空池不注入。
+ */
+export function lazyCatalogReminder(pending: LazyCatalogEntry[]): string | undefined {
+  if (pending.length === 0) return undefined;
+  const lines = pending.map((entry) => {
+    const desc = entry.description.length > CATALOG_DESC_MAX_CHARS
+      ? `${entry.description.slice(0, CATALOG_DESC_MAX_CHARS - 1)}…`
+      : entry.description;
+    return `- ${entry.name}: ${desc}`;
+  });
+  const content = [
+    `当前有 ${pending.length} 个延迟加载工具未下发完整定义（只列目录以节省上下文）。`,
+    ...lines,
+    `需要使用其中某个工具时，先调用 toolSearch({ "query": "工具名" }) 获取其完整参数定义；`,
+    `加载成功后即可像普通工具一样直接调用。直接调用未加载工具也会被自动加载，但参数需符合其 schema。`,
+  ].join("\n");
+  return wrapReminder(content);
+}
+
 /** 计划模式首轮与间隔轮次注入的完整版指令。 */
 const PLAN_FULL = `当前处于计划模式。在用户明确批准之前，不要修改任何文件，也不要执行会产生副作用的命令。
 

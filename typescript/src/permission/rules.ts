@@ -31,18 +31,39 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`);
 }
 
+/** 内置六工具的名单：规则主题按字段取值；之外的（MCP）工具用整串参数 JSON 作主题（plan D5）。 */
+const BUILTIN_TOOLS = new Set(["Read", "Write", "Edit", "Bash", "Glob", "Grep"]);
+
 function subjectFor(toolName: string, args: Record<string, unknown>): string | undefined {
   if (toolName === "Bash") {
     return typeof args.command === "string" ? args.command : undefined;
   }
   const field = PATH_ARG_BY_TOOL[toolName];
-  if (!field) return undefined;
-  const value = args[field];
-  return typeof value === "string" ? toPosix(value) : undefined;
+  if (field) {
+    const value = args[field];
+    return typeof value === "string" ? toPosix(value) : undefined;
+  }
+  // MCP 工具（plan D5）：结构化参数无从取单一字段，用整串 JSON 作匹配主题。
+  // 内置工具不在 PATH_ARG_BY_TOOL 的情况不存在，此分支实际只服务 MCP 工具。
+  if (!BUILTIN_TOOLS.has(toolName)) {
+    return JSON.stringify(args);
+  }
+  return undefined;
+}
+
+/**
+ * 规则书写名与注册名的等价比较（MCP spec F12）：
+ * 用户可按「Server名.工具名」书写，冲突注册名是「Server名_工具名」（MCP spec F8）。
+ * 做一次双向点/下划线互换比较，其余情况要求完全一致。
+ */
+function ruleToolMatches(ruleTool: string, toolName: string): boolean {
+  if (ruleTool === toolName) return true;
+  return ruleTool.replace(".", "_") === toolName || toolName.replace("_", ".") === ruleTool;
 }
 
 export function matchRule(rule: Rule, toolName: string, args: Record<string, unknown>): boolean {
-  if (rule.tool !== toolName) return false;
+  // MCP 工具的规则可写「Server名.工具名」，与注册名「Server名_工具名」双向对齐（MCP spec F12）。
+  if (!ruleToolMatches(rule.tool, toolName)) return false;
   const subject = subjectFor(toolName, args);
   if (subject === undefined) return false;
   if (!rule.pattern.includes("*")) return subject === rule.pattern;
@@ -67,7 +88,7 @@ export function checkRules(rules: RuleSet, toolName: string, args: Record<string
   return { verdict: "abstain" };
 }
 
-/** 永久放行写入的规则文本：精确整串、不泛化（spec F23）。 */
+/** 永久放行写入的规则文本：精确整串、不泛化（spec F23）。MCP 工具的主题是参数 JSON 整串（plan D5）。 */
 export function ruleTextFor(tool: Tool, args: Record<string, unknown>): string {
   const subject = subjectFor(tool.name, args);
   return subject === undefined ? `${tool.name}()` : `${tool.name}(${subject})`;

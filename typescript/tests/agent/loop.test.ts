@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentEvent, AgentMode } from "../../src/agent/events.js";
 import { runLoop } from "../../src/agent/loop.js";
+import { Compactor } from "../../src/context/compactor.js";
+import { TokenEstimator } from "../../src/context/tokens.js";
 import { ConversationManager, type Message } from "../../src/conversation/conversation.js";
 import { buildAnthropicMessages } from "../../src/llm/anthropic.js";
 import type { LLMClient } from "../../src/llm/client.js";
@@ -70,6 +75,7 @@ async function collect(
     mode?: AgentMode;
     maxIterations?: number;
     signal?: AbortSignal;
+    compactor?: Compactor;
   } = {},
 ): Promise<{ events: AgentEvent[]; conversation: ConversationManager; done: Extract<AgentEvent, { type: "done" }> }> {
   const conversation = options.conversation ?? new ConversationManager();
@@ -84,6 +90,7 @@ async function collect(
     mode: options.mode ?? "execute",
     ...(options.maxIterations ? { maxIterations: options.maxIterations } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.compactor ? { compactor: options.compactor } : {}),
   })) {
     events.push(event);
   }
@@ -359,13 +366,13 @@ describe("runLoop 计划模式", () => {
     // 计划模式不再摘掉写类工具，对改文件的约束改由权限层逐次确认承担。
     const planSpy = scriptedClient([[{ type: "text_delta", text: "计划如下" }, end()]]);
     await collect(planSpy.client, { mode: "plan" });
-    expect(planSpy.receivedTools[0]).toHaveLength(6);
+    expect(planSpy.receivedTools[0]).toHaveLength(7);
     expect(planSpy.receivedTools[0]!.map((definition) => (definition.function as { name: string }).name))
-      .toEqual(["Read", "Write", "Edit", "Bash", "Glob", "Grep"]);
+      .toEqual(["Read", "Write", "Edit", "Bash", "Glob", "Grep", "toolSearch"]);
 
     const execSpy = scriptedClient([[{ type: "text_delta", text: "开始改" }, end()]]);
     await collect(execSpy.client, { mode: "execute" });
-    expect(execSpy.receivedTools[0]).toHaveLength(6);
+    expect(execSpy.receivedTools[0]).toHaveLength(7);
   });
 
   test("AC29 计划模式下循环机制不变", async () => {
@@ -379,6 +386,113 @@ describe("runLoop 计划模式", () => {
     expect(done.reason).toBe("complete");
     expect(done.iterations).toBe(3);
     expect(done.finalText).toBe("这是计划");
-    expect(spy.receivedTools.every((tools) => tools.length === 6)).toBe(true);
+    expect(spy.receivedTools.every((tools) => tools.length === 7)).toBe(true);
+  });
+});
+
+describe("上下文压缩集成", () => {
+  /** 用真实 Compactor，但注入小窗口与临时工作目录，避免碰真实文件系统与真实 LLM。 */
+  function buildCompactor(
+    client: LLMClient,
+    conversation: ConversationManager,
+    workDir: string,
+    contextWindow: number,
+  ): Compactor {
+    return new Compactor(client, conversation, new TokenEstimator(), workDir, contextWindow);
+  }
+
+  test("请求前超线触发压缩，事件流出现 compaction 且历史被替换", async () => {
+    const workDir = mkdtempSync(join(tmpdir(), "mewcode-loop-"));
+    try {
+      const spy = scriptedClient([
+        [{ type: "text_delta", text: "摘要正文" }, end()], // 第 1 次：摘要请求
+        [{ type: "text_delta", text: "正常回复" }, end()], // 第 2 次：本轮对话
+      ]);
+      const conversation = new ConversationManager();
+      // 窗口 20K，安全线 7K；12 条 × 3500 字 ≈ 10.5K tokens 必然超线
+      for (let index = 0; index < 12; index += 1) {
+        conversation.addUserMessage("字".repeat(3_500));
+      }
+      const compactor = buildCompactor(spy.client, conversation, workDir, 20_000);
+
+      const { events } = await collect(spy.client, { conversation, compactor });
+
+      const compaction = events.find((event) => event.type === "compaction");
+      expect(compaction).toBeDefined();
+      expect((compaction as { text: string }).text).toContain("已压缩历史");
+      expect(conversation.getMessages()[0]!.content).toContain("摘要正文");
+      expect(conversation.getMessages().at(-1)!.content).toBe("正常回复");
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  test("未超线时不压缩，事件流无 compaction", async () => {
+    const workDir = mkdtempSync(join(tmpdir(), "mewcode-loop-"));
+    try {
+      const spy = scriptedClient([[{ type: "text_delta", text: "你好" }, end()]]);
+      const conversation = new ConversationManager();
+      conversation.addUserMessage("短消息");
+      const compactor = buildCompactor(spy.client, conversation, workDir, 200_000);
+
+      const { events, done } = await collect(spy.client, { conversation, compactor });
+
+      expect(events.some((event) => event.type === "compaction")).toBe(false);
+      expect(done.reason).toBe("complete");
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  test("超阈值的工具结果在历史里是预览而非原文", async () => {
+    const workDir = mkdtempSync(join(tmpdir(), "mewcode-loop-"));
+    try {
+      // Read 按行截断（单行上限 2000 字符），所以用多行大文件才能越过存盘线
+      const bigFile = join(workDir, "big.txt");
+      writeFileSync(bigFile, Array.from({ length: 1_000 }, () => "x".repeat(40)).join("\n"));
+      const spy = scriptedClient([
+        [toolCall("t1", "Read", { file_path: "big.txt" }), end()],
+        [{ type: "text_delta", text: "读完了" }, end()],
+      ]);
+      const conversation = new ConversationManager();
+      conversation.addUserMessage("读文件");
+      const compactor = buildCompactor(spy.client, conversation, workDir, 200_000);
+
+      const events: AgentEvent[] = [];
+      for await (const event of runLoop({
+        client: spy.client,
+        conversation,
+        registry: createDefaultRegistry(),
+        protocol: "openai-compat",
+        workDir,
+        mode: "execute",
+        compactor,
+      })) {
+        events.push(event);
+      }
+
+      const toolResultMessage = conversation.getMessages().find((message) => message.toolResults?.length);
+      expect(toolResultMessage).toBeDefined();
+      expect(toolResultMessage!.toolResults![0]!.content).toContain("完整输出已存盘");
+      // 工具行事件流不受存盘影响
+      expect(events.some((event) => event.type === "tool_start")).toBe(true);
+      expect(events.some((event) => event.type === "tool_end")).toBe(true);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  test("compactor 缺省时不做任何压缩", async () => {
+    const spy = scriptedClient([[{ type: "text_delta", text: "你好" }, end()]]);
+    const conversation = new ConversationManager();
+    for (let index = 0; index < 12; index += 1) {
+      conversation.addUserMessage("字".repeat(3_500));
+    }
+    const before = conversation.len();
+
+    const { events } = await collect(spy.client, { conversation });
+
+    expect(events.some((event) => event.type === "compaction")).toBe(false);
+    expect(conversation.len()).toBe(before + 1); // 只多了本轮助手回复
   });
 });

@@ -1,9 +1,13 @@
 import { Box, Static, Text, useApp, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
-import type { HookConfig, MCPServerConfig, ProviderConfig } from "../config/config.js";
+import type { HookConfig, ProviderConfig } from "../config/config.js";
 import { getContextWindowAsync } from "../config/config.js";
+import type { McpServerReport } from "../mcp/types.js";
 import { ConversationManager } from "../conversation/conversation.js";
 import { createClient, type LLMClient } from "../llm/client.js";
+import { getContextWindow } from "../config/config.js";
+import { Compactor, MANUAL_MARGIN_TOKENS } from "../context/compactor.js";
+import { TokenEstimator } from "../context/tokens.js";
 import { buildSystemPrompt, detectEnvironment } from "../prompt/builder.js";
 import { ModeTracker } from "../prompt/reminder.js";
 import type { AgentMode, LoopPhase } from "../agent/events.js";
@@ -11,7 +15,7 @@ import { runLoop } from "../agent/loop.js";
 import { appendLocalRule, loadPermissionConfig } from "../permission/config.js";
 import { nextPermissionMode } from "../permission/limits.js";
 import type { ConfirmChoice, ConfirmRequest, PermissionGate, PermissionMode, Rule } from "../permission/types.js";
-import { createDefaultRegistry } from "../tools/index.js";
+import type { ToolRegistry } from "../tools/registry.js";
 import { Banner, ChatView, CommittedMessage, type ChatMessage } from "./chat.js";
 import { ConfirmBox } from "./confirm.js";
 import { InputBox } from "./input.js";
@@ -64,14 +68,30 @@ function tailLines(text: string, maxLines: number): string {
   return lines.length <= maxLines ? text : lines.slice(-maxLines).join("\n");
 }
 
+/** MCP 连接报告的一行文案：四态可区分（spec F16、AC15）。 */
+export function mcpReportText(report: McpServerReport): string {
+  switch (report.status) {
+    case "ok":
+      return `MCP ${report.name}：已注册 ${report.toolCount} 个工具（${report.tools.join(", ")}）`;
+    case "disabled":
+      return `MCP ${report.name}：已配置为禁用，未连接`;
+    case "timeout":
+      return `MCP ${report.name}：连接超时（${report.timeoutMs}ms），本次未接入，其余功能不受影响`;
+    case "failed":
+      return `MCP ${report.name}：连接失败——${report.reason}`;
+  }
+}
+
 export function App({
   providers,
-  mcpServers: _mcpServers,
   hooks: _hooks,
+  registry,
+  mcpReports = [],
 }: {
   providers: ProviderConfig[];
-  mcpServers: MCPServerConfig[];
   hooks: HookConfig[];
+  registry: ToolRegistry;
+  mcpReports?: McpServerReport[];
 }) {
   const { exit } = useApp();
   const [appState, setAppState] = useState<AppState>(providers.length === 1 ? "chat" : "providerSelect");
@@ -94,7 +114,8 @@ export function App({
   const [pendingConfirm, setPendingConfirm] = useState<ConfirmRequest | null>(null);
 
   const clientRef = useRef<LLMClient | null>(null);
-  const registryRef = useRef(createDefaultRegistry());
+  const compactorRef = useRef<Compactor | null>(null);
+  const registryRef = useRef(registry);
   const conversationRef = useRef(new ConversationManager());
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingTextRef = useRef("");
@@ -187,15 +208,23 @@ export function App({
   // 权限配置的解析告警在启动时呈现一次，不静默放开（权限 spec N5）。
   useEffect(() => {
     const warnings = permissionConfigRef.current.warnings;
-    if (warnings.length === 0) return;
+    // MCP 连接报告是启动期一次性数据，与告警同批呈现（spec F16）。
+    const mcpMessages = mcpReports.map((report) => ({
+      role: "system" as const,
+      content: mcpReportText(report),
+      isError: report.status === "failed" || report.status === "timeout",
+    }));
+    if (warnings.length === 0 && mcpMessages.length === 0) return;
     setMessages((previous) => {
       const next: ChatMessage[] = [
         ...previous,
         ...warnings.map((text) => ({ role: "system" as const, content: `权限配置：${text}`, isError: true })),
+        ...mcpMessages,
       ];
       advanceCommit(next);
       return next;
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mcpReports 是启动期一次性数据
   }, []);
 
   useEffect(() => {
@@ -213,7 +242,17 @@ export function App({
     clientRef.current = null;
     void createClient(selectedProvider, segments)
       .then((client) => {
-        if (!cancelled) clientRef.current = client;
+        if (!cancelled) {
+          clientRef.current = client;
+          // Compactor 跨轮持有熔断计数与估算锚点，随 client 一起就绪（上下文 spec F6）。
+          compactorRef.current = new Compactor(
+            client,
+            conversationRef.current,
+            new TokenEstimator(),
+            workDir,
+            getContextWindow(selectedProvider),
+          );
+        }
       })
       .catch((cause: unknown) => {
         if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
@@ -221,6 +260,39 @@ export function App({
     void getContextWindowAsync(selectedProvider).catch(() => undefined);
     return () => { cancelled = true; };
   }, [appState, selectedProvider, workDir]);
+
+  /**
+   * /compact 手动压缩（上下文 spec F13/F14）：无阈值直接压；
+   * 压后剩余 <3K 提示异常；熔断中成功则解除熔断并提示恢复。
+   */
+  async function handleCompact(): Promise<void> {
+    const compactor = compactorRef.current;
+    if (!compactor) {
+      setError("LLM 客户端尚未就绪，无法压缩。");
+      return;
+    }
+    if (compactor.circuitOpen) {
+      setMessages((previous) => [...previous, { role: "system", content: "压缩连续失败中，正在重试手动压缩……" }]);
+    }
+    const result = await compactor.compactManually();
+    if (result.error) {
+      const suffix = result.circuitOpen ? "；已连续失败 3 次，自动压缩暂停（再次 /compact 成功后恢复）" : "";
+      setError(`压缩失败：${result.error}${suffix}`);
+      return;
+    }
+    const parts = [`已压缩历史：${result.summaryMessageCount} 条消息 → 摘要 + 近期 ${result.recentCount} 条原文`];
+    if (compactor.remainingTokens() < MANUAL_MARGIN_TOKENS) {
+      parts.push("警告：压缩后剩余空间不足 3K tokens，下一次请求可能仍超限。");
+    }
+    if (compactor.failureCount === 0) {
+      parts.push("自动压缩已恢复。");
+    }
+    setMessages((previous) => {
+      const next: ChatMessage[] = [...previous, { role: "system", content: parts.join(" ") }];
+      advanceCommit(next);
+      return next;
+    });
+  }
 
   async function runAgentLoop(): Promise<void> {
     const client = clientRef.current;
@@ -256,6 +328,7 @@ export function App({
         workDir,
         mode,
         permission: buildGate(),
+        compactor: compactorRef.current ?? undefined,
         signal: abortControllerRef.current?.signal,
         // 本轮的模式指令：首轮完整、间隔轮次重复、其余精简（spec F17–F19）。
         reminders: modeTrackerRef.current.nextTurn(),
@@ -301,6 +374,14 @@ export function App({
           case "notice":
             setMessages((previous) => {
               const next: ChatMessage[] = [...previous, { role: "system", content: event.text, isError: event.isError }];
+              advanceCommit(next);
+              return next;
+            });
+            break;
+          case "compaction":
+            // 压缩提示与 notice 同路径渲染（上下文 spec F15）。
+            setMessages((previous) => {
+              const next: ChatMessage[] = [...previous, { role: "system", content: event.text }];
               advanceCommit(next);
               return next;
             });
@@ -355,6 +436,10 @@ export function App({
     if (isStreaming) return;
     if (text === "/exit") {
       exit();
+      return;
+    }
+    if (text === "/compact") {
+      void handleCompact();
       return;
     }
     if (text === "/plan") {

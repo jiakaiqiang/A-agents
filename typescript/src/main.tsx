@@ -4,6 +4,9 @@ import React from "react";
 import { render } from "ink";
 import cursor from "cli-cursor";
 import { loadConfig } from "./config/config.js";
+import { McpManager, setMcpManager } from "./mcp/manager.js";
+import type { McpServerReport } from "./mcp/types.js";
+import { createDefaultRegistry } from "./tools/index.js";
 import { App } from "./tui/app.js";
 
 let ttyFd: number | null = null;
@@ -44,8 +47,26 @@ try {
 }
 
 process.on("exit", restoreCursor);
+
+// MCP 工具接入（spec F4）：阻塞启动——连接完成（或全部降级）后再进聊天。
+// 退出钩子里清理子进程，不留僵尸（spec N3）。
+const registry = createDefaultRegistry();
+const manager = new McpManager(config.mcp_servers);
+setMcpManager(manager);
+let mcpReports: McpServerReport[] = [];
+try {
+  mcpReports = await manager.connectAll(registry);
+} catch (error) {
+  // connectAll 内部已按 Server 降级，这里兜底总失败：不阻塞启动。
+  console.error(`MCP 初始化失败：${error instanceof Error ? error.message : String(error)}`);
+  await manager.disposeAll();
+}
+process.on("exit", () => {
+  void manager.disposeAll();
+});
+
 const instance = render(
-  <App providers={config.providers} mcpServers={config.mcp_servers} hooks={config.hooks} />,
+  <App providers={config.providers} hooks={config.hooks} registry={registry} mcpReports={mcpReports} />,
   { exitOnCtrlC: false },
 );
 

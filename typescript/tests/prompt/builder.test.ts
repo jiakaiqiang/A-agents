@@ -165,9 +165,9 @@ describe("buildSystemPrompt", () => {
 
   test("稳定段始终列全量工具，与当前模式无关", () => {
     const { stable } = buildSystemPrompt(environment, { tools: toolSummaries() });
-    // 计划模式实际只下发三个只读工具，稳定段仍列六个：
+    // 计划模式实际只下发只读工具，稳定段仍列全部（含 toolSearch）：
     // 随模式增删会改变稳定段字节，切一次模式就废掉整个缓存前缀。
-    for (const name of ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]) {
+    for (const name of ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "toolSearch"]) {
       expect(stable).toContain(name);
     }
   });

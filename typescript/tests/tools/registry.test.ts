@@ -15,9 +15,9 @@ function schema(definition: Record<string, unknown>, protocol: string): { requir
 }
 
 describe("ToolRegistry", () => {
-  test("默认注册表包含六个核心工具", () => {
+  test("默认注册表包含六个核心工具与 toolSearch（LF7）", () => {
     const registry = createDefaultRegistry();
-    expect(registry.list().map((tool) => tool.name)).toEqual(["Read", "Write", "Edit", "Bash", "Glob", "Grep"]);
+    expect(registry.list().map((tool) => tool.name)).toEqual(["Read", "Write", "Edit", "Bash", "Glob", "Grep", "toolSearch"]);
     for (const tool of registry.list()) {
       expect(tool.description.length).toBeGreaterThan(0);
       expect(tool.parameters.type).toBe("object");
@@ -28,7 +28,7 @@ describe("ToolRegistry", () => {
     const registry = createDefaultRegistry();
     const protocols = ["anthropic", "openai", "openai-compat"] as const;
     const definitions = protocols.map((protocol) => registry.definitionsFor(protocol));
-    expect(definitions.map((items) => items.length)).toEqual([6, 6, 6]);
+    expect(definitions.map((items) => items.length)).toEqual([7, 7, 7]);
     expect(names(definitions[0], protocols[0])).toEqual(names(definitions[1], protocols[1]));
     expect(names(definitions[0], protocols[0])).toEqual(names(definitions[2], protocols[2]));
 
@@ -52,15 +52,15 @@ describe("ToolRegistry", () => {
 
   test("只读过滤只导出读类工具", () => {
     const registry = createDefaultRegistry();
-    expect(registry.listReadOnly().map((tool) => tool.name)).toEqual(["Read", "Glob", "Grep"]);
+    expect(registry.listReadOnly().map((tool) => tool.name)).toEqual(["Read", "Glob", "Grep", "toolSearch"]);
     expect(registry.list().filter((tool) => !tool.readOnly).map((tool) => tool.name))
       .toEqual(["Write", "Edit", "Bash"]);
 
     for (const protocol of ["anthropic", "openai", "openai-compat"] as const) {
       const definitions = registry.definitionsFor(protocol, { readOnlyOnly: true });
-      expect(definitions).toHaveLength(3);
-      expect(names(definitions, protocol)).toEqual(["Read", "Glob", "Grep"]);
-      expect(registry.definitionsFor(protocol)).toHaveLength(6);
+      expect(definitions).toHaveLength(4);
+      expect(names(definitions, protocol)).toEqual(["Read", "Glob", "Grep", "toolSearch"]);
+      expect(registry.definitionsFor(protocol)).toHaveLength(7);
     }
   });
 
@@ -128,8 +128,8 @@ describe("runTool", () => {
 
   test("新增第七个工具自动出现在三协议定义中", () => {
     const registry = createDefaultRegistry().register(fakeTool);
-    expect(registry.definitionsFor("anthropic")).toHaveLength(7);
-    expect(registry.definitionsFor("openai")).toHaveLength(7);
-    expect(registry.definitionsFor("openai-compat")).toHaveLength(7);
+    expect(registry.definitionsFor("anthropic")).toHaveLength(8);
+    expect(registry.definitionsFor("openai")).toHaveLength(8);
+    expect(registry.definitionsFor("openai-compat")).toHaveLength(8);
   });
 });

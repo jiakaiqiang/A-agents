@@ -86,3 +86,44 @@ describe("ruleTextFor", () => {
     expect(ruleTextFor(BashTool, { command: "npm test" })).toBe("Bash(npm test)");
   });
 });
+
+describe("MCP 工具的规则主题（plan D5）", () => {
+  const args = { query: "SELECT 1", limit: 10 };
+
+  test("allow 规则以参数 JSON 整串命中 MCP 工具（AC10）", () => {
+    const allow = set([["project", [["allow", "db.query_database(*)"]]]]);
+    expect(checkRules(allow, "db.query_database", args).verdict).toBe("allow");
+  });
+
+  test("精确模式只命中完全一致的参数 JSON", () => {
+    const exact = set([["project", [["allow", `db.query_database(${JSON.stringify(args)})`]]]]);
+    expect(checkRules(exact, "db.query_database", args).verdict).toBe("allow");
+    expect(checkRules(exact, "db.query_database", { query: "SELECT 2" }).verdict).toBe("abstain");
+  });
+
+  test("deny 规则对 MCP 工具生效（AC11 的规则层基础）", () => {
+    const deny = set([["project", [["deny", "db.query_database(*)"]]]]);
+    const result = checkRules(deny, "db.query_database", args);
+    expect(result.verdict).toBe("deny");
+  });
+
+  test("内置工具不受 JSON 主题分支影响（零变化）", () => {
+    // Glob 的主题仍是 path 字段，不是 JSON 整串——args 没有 path 字段时不命中。
+    expect(checkRules(set([["project", [["allow", "Glob(x)"]]]]), "Glob", { pattern: "x" }).verdict).toBe("abstain");
+    // Read 的主题仍是路径字段：精确命中与不命中都按路径走，而非 JSON 整串。
+    expect(checkRules(set([["project", [["allow", "Read(/tmp/x)"]]]]), "Read", { file_path: "/tmp/x" }).verdict).toBe("allow");
+    expect(checkRules(set([["project", [["allow", `Read(${JSON.stringify({ file_path: "/tmp/x" })})`]]]]), "Read", { file_path: "/tmp/x" }).verdict).toBe("abstain");
+  });
+
+  test("ruleTextFor 对 MCP 工具产出 JSON 整串文本（AC12）", () => {
+    const tool = {
+      name: "db.query_database",
+      description: "x",
+      parameters: { type: "object" as const, properties: {}, required: [] },
+      readOnly: false,
+      callSummary: () => "x",
+      execute: async () => ({ ok: true, content: "", summary: "" }),
+    };
+    expect(ruleTextFor(tool, args)).toBe(`db.query_database(${JSON.stringify(args)})`);
+  });
+});

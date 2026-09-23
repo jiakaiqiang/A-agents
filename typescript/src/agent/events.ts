@@ -26,6 +26,7 @@ export type AgentEvent =
   | { type: "usage"; usage: UsageInfo } // 本轮累计值，由 loop 累加后发出
   | { type: "progress"; iteration: number; phase: LoopPhase; toolsExecuted: number }
   | { type: "notice"; text: string; isError: boolean }
+  | { type: "compaction"; text: string } // 历史被压缩时发出，TUI 呈现提示（上下文 spec F15）
   | {
     // 本轮末尾事件，同时承载停止原因与统计；生成器的 return 值在 for await 中拿不到。
     type: "done";
