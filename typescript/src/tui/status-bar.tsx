@@ -22,7 +22,7 @@ export function StatusBar({
 }) {
   // 命中与写入分开显示：只看总量分不清是省下来的还是刚花钱建的缓存。
   const cache = cacheReadTokens > 0 || cacheCreationTokens > 0
-    ? ` ${symbols.separator} 缓存 ${formatTokens(cacheReadTokens)}⚡ ${formatTokens(cacheCreationTokens)}✎`
+    ? ` ${symbols.separator} 缓存读取 ${formatTokens(cacheReadTokens)} ${symbols.separator} 缓存写入 ${formatTokens(cacheCreationTokens)}`
     : "";
   return (
     <Box marginTop={1}>

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,8 +14,36 @@ import { TokenEstimator } from "../../src/context/tokens.js";
 import { ConversationManager, type Message, type ToolResultBlock } from "../../src/conversation/conversation.js";
 import type { LLMClient } from "../../src/llm/client.js";
 import type { StreamEvent } from "../../src/llm/events.js";
+import { rebuildHistory } from "../../src/memory/session.js";
 
 let workDir = "";
+
+test("压缩分界保留完整工具配对，落盘后可再次重建", async () => {
+  const conversation = new ConversationManager();
+  conversation.addUserMessage("旧问题");
+  conversation.addAssistantMessage("旧回答");
+  conversation.addToolUseMessage("读取", [{ id: "read-1", name: "Read", arguments: {} }]);
+  conversation.addToolResultMessage([{ toolUseId: "read-1", content: "x".repeat(44_000) }]);
+  const split = splitHistory(conversation.getMessages());
+  expect(split.recent[0]?.toolUses?.[0]?.id).toBe("read-1");
+  const compactor = new Compactor(summarizingClient().client, conversation, new TokenEstimator(), workDir, 100_000);
+  expect((await compactor.compactManually()).compacted).toBe(true);
+  const rebuilt = rebuildHistory([JSON.stringify({ type: "compaction", ts: new Date().toISOString(), messages: conversation.getMessages() })]);
+  expect(rebuilt.truncatedFrom).toBeNull();
+  expect(rebuilt.messages).toEqual(conversation.getMessages());
+});
+
+test("needsCompaction 与自动阈值一致且不受熔断影响", async () => {
+  const conversation = new ConversationManager();
+  const compactor = new Compactor(failingClient().client, conversation, new TokenEstimator(), workDir, 15_000);
+  conversation.addUserMessage("short");
+  expect(compactor.needsCompaction()).toBe(false);
+  conversation.addAssistantMessage("x".repeat(12_000));
+  expect(compactor.needsCompaction()).toBe(true);
+  for (let i = 0; i < MAX_SUMMARY_FAILURES; i++) await compactor.compactManually();
+  expect(compactor.circuitOpen).toBe(true);
+  expect(compactor.needsCompaction()).toBe(true);
+});
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "mewcode-compact-"));
@@ -120,9 +148,10 @@ describe("applyLightPrevention", () => {
     const { compactor } = buildCompactor(summarizingClient().client, [], 200_000);
     const big = "x".repeat((TOOL_SPILL_TOKENS + 100) * 4);
     const blocks: ToolResultBlock[] = [{ toolUseId: "a", content: big }];
-    const processed = await compactor.applyLightPrevention(blocks);
+    const processed = await compactor.applyLightPrevention(blocks, new Map([["a", "Read"]]));
     expect(processed[0]!.content).toContain("完整输出已存盘");
     expect(processed[0]!.content.length).toBeLessThan(big.length);
+    expect(readdirSync(join(workDir, ".mewcode", "tool-outputs"))[0]).toMatch(/^Read-/);
   });
 
   test("未超阈值的结果原样保留", async () => {
@@ -140,10 +169,11 @@ describe("applyLightPrevention", () => {
       toolUseId: `t${index}`,
       content: each,
     }));
-    const processed = await compactor.applyLightPrevention(blocks);
+    const processed = await compactor.applyLightPrevention(blocks, new Map([["t0", "Grep"]]));
     const total = processed.reduce((sum, block) => sum + Math.ceil(block.content.length / 4), 0);
     expect(total).toBeLessThanOrEqual(MESSAGE_SPILL_TOKENS);
     expect(processed.some((block) => block.content.includes("完整输出已存盘"))).toBe(true);
+    expect(readdirSync(join(workDir, ".mewcode", "tool-outputs"))[0]).toMatch(/^Grep-/);
   });
 });
 
@@ -156,6 +186,8 @@ describe("maintain", () => {
 
     const notice = await compactor.maintain();
     expect(notice).toContain("已压缩历史");
+    expect(notice).toContain("摘要内容：");
+    expect(notice).toMatch(/上下文已从约 \d+ tokens 压缩到约 \d+ tokens/);
     expect(spy.calls).toBe(1);
 
     const history = conversation.getMessages();
@@ -203,11 +235,14 @@ describe("熔断", () => {
     const messages = Array.from({ length: 12 }, (_v, index) => naturalMessage(index, 3_500));
     const { compactor, conversation } = buildCompactor(spy.client, messages, 20_000);
 
+    const notices: Array<string | null> = [];
     for (let attempt = 0; attempt < MAX_SUMMARY_FAILURES; attempt += 1) {
-      await compactor.maintain();
+      notices.push(await compactor.maintain());
     }
     expect(compactor.circuitOpen).toBe(true);
     expect(spy.calls).toBe(MAX_SUMMARY_FAILURES);
+    expect(notices.slice(0, -1)).toEqual([null, null]);
+    expect(notices.at(-1)).toContain("已暂停自动压缩");
 
     // 熔断后不再发请求，历史保持原样
     await compactor.maintain();
@@ -241,6 +276,7 @@ describe("compactManually", () => {
     expect(await compactor.maintain()).toBeNull(); // 自动不触发
     const result = await compactor.compactManually();
     expect(result.compacted).toBe(true);
+    expect(result.beforeTokens).toBeGreaterThan(result.afterTokens!);
     expect(spy.calls).toBe(1);
     expect(conversation.getMessages()[0]!.content).toContain("结构化摘要");
     expect(compactor.failureCount).toBe(0);

@@ -73,6 +73,14 @@ function classifyOpenAIError(error: unknown): Error {
   return new NetworkError(error instanceof Error ? error.message : "网络连接失败");
 }
 
+/**
+ * system 消息内容：已激活 Skill 的钉住段拼在末尾（Skill spec F8）。
+ * OpenAI 系是自动前缀缓存，钉住段在最后，稳定段与环境段的前缀不受影响（Skill spec N2）。
+ */
+export function systemContent(systemPrompt: string, pinned?: string): string {
+  return pinned?.trim() ? `${systemPrompt}\n\n${pinned}` : systemPrompt;
+}
+
 abstract class BaseOpenAIClient {
   protected readonly client: OpenAI;
   protected readonly maxOutputTokens: number;
@@ -110,7 +118,7 @@ export class OpenAIClient extends BaseOpenAIClient {
       const stream = await this.client.responses.create({
         model: this.config.model,
         input: [
-          { role: "system", content: this.systemPrompt },
+          { role: "system", content: systemContent(this.systemPrompt, options.pinned) },
           ...(buildOpenAIInput(history, options.reminders ?? []) as unknown as Array<Record<string, unknown>>),
         ] as unknown as ResponseInput,
         stream: true,
@@ -172,7 +180,7 @@ export class OpenAICompatClient extends BaseOpenAIClient {
       const stream = await this.client.chat.completions.create({
         model: this.config.model,
         messages: [
-          { role: "system", content: this.systemPrompt },
+          { role: "system", content: systemContent(this.systemPrompt, options.pinned) },
           ...buildChatCompletionMessages(history, options.reminders ?? []),
         ],
         stream: true,

@@ -41,6 +41,17 @@ function abortError(): Error {
 }
 
 describe("collectStream", () => {
+  test("SDK 取消后正常结束流也被判为 aborted", async () => {
+    const controller = new AbortController();
+    const client: LLMClient = { async *stream() {
+      yield { type: "text_delta", text: "半句" };
+      controller.abort();
+      yield { type: "stream_end", stopReason: "end_turn", usage: usage(0, 0) };
+    } };
+    const result = await drain(collectStream(client, new ConversationManager(), [], { signal: controller.signal }));
+    expect(result.response.aborted).toBe(true);
+    expect(result.response.text).toBe("半句");
+  });
   test("双路输出的文本完全一致", async () => {
     const { events, response } = await run([
       { type: "text_delta", text: "你" },

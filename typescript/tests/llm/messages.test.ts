@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildAnthropicMessages, buildSystemBlocks } from "../../src/llm/anthropic.js";
-import { buildChatCompletionMessages, buildOpenAIInput } from "../../src/llm/openai.js";
+import { buildChatCompletionMessages, buildOpenAIInput, systemContent } from "../../src/llm/openai.js";
 import { ConversationManager } from "../../src/conversation/conversation.js";
 import { wrapReminder } from "../../src/prompt/reminder.js";
 
@@ -45,6 +45,24 @@ describe("buildSystemBlocks 的缓存分层", () => {
     const withReminder = buildSystemBlocks(SEGMENTS);
     // 补充指令走消息通道，动不到系统提示词这两个缓存单元。
     expect(withReminder).toEqual(without);
+  });
+
+  test("钉住段是第三块：不打缓存标记，前两块字节与标记不变（Skill AC9、N2）", () => {
+    const without = buildSystemBlocks(SEGMENTS);
+    expect(buildSystemBlocks(SEGMENTS, "")).toEqual(without);
+    expect(buildSystemBlocks(SEGMENTS, "  ")).toEqual(without);
+    const pinned = buildSystemBlocks(SEGMENTS, "<active-skills>A</active-skills>");
+    expect(pinned).toHaveLength(3);
+    expect(pinned.slice(0, 2)).toEqual(without);
+    expect(pinned[2]).toEqual({ type: "text", text: "<active-skills>A</active-skills>" });
+  });
+});
+
+describe("OpenAI 系 system 内容", () => {
+  test("钉住段拼在末尾，前缀不变；无钉住时原样返回", () => {
+    expect(systemContent("SYS", undefined)).toBe("SYS");
+    expect(systemContent("SYS", " ")).toBe("SYS");
+    expect(systemContent("SYS", "PIN")).toBe("SYS\n\nPIN");
   });
 });
 

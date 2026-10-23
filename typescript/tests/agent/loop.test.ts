@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, AgentMode } from "../../src/agent/events.js";
@@ -16,6 +16,15 @@ import { MAX_INVALID_ITERATIONS } from "../../src/tools/limits.js";
 function usage(inputTokens: number, outputTokens: number): UsageInfo {
   return { inputTokens, outputTokens, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
 }
+
+test("自然完成的思考块也进入历史，供会话完整存档", async () => {
+  const spy = scriptedClient([[
+    { type: "thinking_complete", thinking: "推理内容", signature: "signed" },
+    { type: "text_delta", text: "回答" }, end(),
+  ]]);
+  const result = await collect(spy.client);
+  expect(result.conversation.getMessages().at(-1)?.thinkingBlocks).toEqual([{ thinking: "推理内容", signature: "signed" }]);
+});
 
 function end(inputTokens = 1, outputTokens = 1, stopReason = "end_turn"): StreamEvent {
   return { type: "stream_end", stopReason, usage: usage(inputTokens, outputTokens) };
@@ -401,6 +410,33 @@ describe("上下文压缩集成", () => {
     return new Compactor(client, conversation, new TokenEstimator(), workDir, contextWindow);
   }
 
+  test("同轮工具回灌后的下一次模型请求前再次检查压缩", async () => {
+    const workDir = mkdtempSync(join(tmpdir(), "mewcode-loop-"));
+    try {
+      const spy = scriptedClient([
+        [toolCall("t1"), end()],
+        [{ type: "text_delta", text: "完成" }, end()],
+      ]);
+      const conversation = new ConversationManager();
+      conversation.addUserMessage("找文件");
+      const compactor = buildCompactor(spy.client, conversation, workDir, 200_000);
+      let checks = 0;
+      const originalMaintain = compactor.maintain.bind(compactor);
+      compactor.maintain = async (signal) => {
+        checks += 1;
+        return originalMaintain(signal);
+      };
+
+      const { done } = await collect(spy.client, { conversation, compactor });
+      expect(done.reason).toBe("complete");
+      expect(done.iterations).toBe(2);
+      expect(checks).toBe(2);
+      expect(conversation.getMessages().some((message) => message.toolResults?.length)).toBe(true);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
   test("请求前超线触发压缩，事件流出现 compaction 且历史被替换", async () => {
     const workDir = mkdtempSync(join(tmpdir(), "mewcode-loop-"));
     try {
@@ -422,6 +458,42 @@ describe("上下文压缩集成", () => {
       expect((compaction as { text: string }).text).toContain("已压缩历史");
       expect(conversation.getMessages()[0]!.content).toContain("摘要正文");
       expect(conversation.getMessages().at(-1)!.content).toBe("正常回复");
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  test("摘要连续失败后只提示一次熔断，主对话仍能完成", async () => {
+    const workDir = mkdtempSync(join(tmpdir(), "mewcode-loop-"));
+    try {
+      const conversation = new ConversationManager();
+      for (let index = 0; index < 12; index += 1) {
+        conversation.addUserMessage("字".repeat(3_500));
+      }
+      let summaryCalls = 0;
+      const client: LLMClient = {
+        async *stream(_history, tools) {
+          if (tools.length === 0) {
+            summaryCalls += 1;
+            throw new Error("摘要服务不可用");
+          }
+          yield { type: "text_delta", text: "主对话仍可用" };
+          yield end();
+        },
+      };
+      const compactor = buildCompactor(client, conversation, workDir, 20_000);
+      await compactor.maintain();
+      await compactor.maintain();
+
+      const { events, done } = await collect(client, { conversation, compactor });
+      const notices = events.filter((event) => event.type === "notice" && event.text.includes("暂停自动压缩"));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatchObject({ isError: true });
+      expect(done.reason).toBe("complete");
+      expect(summaryCalls).toBe(3);
+
+      expect(await compactor.maintain()).toBeNull();
+      expect(summaryCalls).toBe(3);
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }
@@ -474,6 +546,11 @@ describe("上下文压缩集成", () => {
       const toolResultMessage = conversation.getMessages().find((message) => message.toolResults?.length);
       expect(toolResultMessage).toBeDefined();
       expect(toolResultMessage!.toolResults![0]!.content).toContain("完整输出已存盘");
+      expect(events.some((event) => event.type === "tool_output" && event.content.includes("完整输出已存盘"))).toBe(true);
+      const files = readdirSync(join(workDir, ".mewcode", "tool-outputs"));
+      expect(files).toHaveLength(1);
+      expect(files[0]).toMatch(/^Read-\d{8}-\d{6}-[a-z0-9]+\.txt$/);
+      expect(readFileSync(join(workDir, ".mewcode", "tool-outputs", files[0]!), "utf8")).toContain("xxxxxxxx");
       // 工具行事件流不受存盘影响
       expect(events.some((event) => event.type === "tool_start")).toBe(true);
       expect(events.some((event) => event.type === "tool_end")).toBe(true);

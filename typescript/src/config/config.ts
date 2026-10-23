@@ -17,12 +17,24 @@ export interface ProviderConfig {
   max_output_tokens?: number;
 }
 
+export interface ContextManagementConfig {
+  auto_margin_tokens?: number;
+  manual_margin_tokens?: number;
+  keep_recent_tokens?: number;
+  keep_recent_natural?: number;
+  max_summary_failures?: number;
+  tool_spill_tokens?: number;
+  message_spill_tokens?: number;
+  spill_preview_chars?: number;
+}
+
 export interface HookConfig {
   [key: string]: unknown;
 }
 
 export interface AppConfig {
   providers: ProviderConfig[];
+  context_management?: ContextManagementConfig;
   permission_mode?: string;
   mcp_servers: Record<string, McpServerConfig>;
   mcp_warnings: string[];
@@ -36,7 +48,7 @@ export class ConfigError extends Error {
   }
 }
 
-const EMPTY_CONFIG: AppConfig = { providers: [], mcp_servers: {}, mcp_warnings: [], hooks: [] };
+const EMPTY_CONFIG: AppConfig = { providers: [], context_management: {}, mcp_servers: {}, mcp_warnings: [], hooks: [] };
 const PROTOCOLS: ProviderProtocol[] = ["anthropic", "openai", "openai-compat"];
 const ENV_KEY_MAP: Record<ProviderProtocol, string> = {
   anthropic: "ANTHROPIC_API_KEY",
@@ -61,6 +73,27 @@ function asRecord(value: unknown, filePath: string): Record<string, unknown> {
   }
 
   return value as Record<string, unknown>;
+}
+
+function parseContextManagement(raw: unknown, filePath: string): ContextManagementConfig {
+  if (raw === undefined) return {};
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigError(`配置文件格式错误：${filePath} 的 context_management 必须是 YAML 对象`);
+  }
+  const result: ContextManagementConfig = {};
+  for (const key of [
+    "auto_margin_tokens", "manual_margin_tokens", "keep_recent_tokens", "keep_recent_natural",
+    "max_summary_failures", "tool_spill_tokens", "message_spill_tokens", "spill_preview_chars",
+  ] as const) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (value !== undefined) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        throw new ConfigError(`配置文件格式错误：context_management.${key} 必须是正数（${filePath}）`);
+      }
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 /**
@@ -184,7 +217,7 @@ export function parseMcpServers(
 
 export function loadSingleFile(filePath: string): AppConfig {
   if (!existsSync(filePath)) {
-    return { ...EMPTY_CONFIG, providers: [], mcp_servers: {}, mcp_warnings: [], hooks: [] };
+    return { ...EMPTY_CONFIG, providers: [], context_management: {}, mcp_servers: {}, mcp_warnings: [], hooks: [] };
   }
 
   let parsed: unknown;
@@ -196,13 +229,14 @@ export function loadSingleFile(filePath: string): AppConfig {
   }
 
   if (parsed === undefined || parsed === null) {
-    return { ...EMPTY_CONFIG, providers: [], mcp_servers: {}, mcp_warnings: [], hooks: [] };
+    return { ...EMPTY_CONFIG, providers: [], context_management: {}, mcp_servers: {}, mcp_warnings: [], hooks: [] };
   }
 
   const raw = asRecord(parsed, filePath);
   const mcp = parseMcpServers(raw.mcp_servers, filePath);
   return {
     providers: Array.isArray(raw.providers) ? raw.providers as ProviderConfig[] : [],
+    context_management: parseContextManagement(raw.context_management, filePath),
     permission_mode: typeof raw.permission_mode === "string" ? raw.permission_mode : undefined,
     mcp_servers: mcp.servers,
     mcp_warnings: mcp.warnings,
@@ -215,6 +249,7 @@ export function mergeConfig(base: AppConfig, override: AppConfig): AppConfig {
   const mcpServers = { ...base.mcp_servers, ...override.mcp_servers };
   return {
     providers: override.providers.length > 0 ? override.providers : base.providers,
+    context_management: { ...base.context_management, ...override.context_management },
     permission_mode: override.permission_mode ?? base.permission_mode,
     mcp_servers: mcpServers,
     mcp_warnings: [...base.mcp_warnings, ...override.mcp_warnings],
@@ -273,7 +308,7 @@ export function loadConfig(filePath?: string): AppConfig {
 
   const config = existingPaths.reduce<AppConfig>(
     (merged, currentPath) => mergeConfig(merged, loadSingleFile(currentPath)),
-    { providers: [], mcp_servers: {}, mcp_warnings: [], hooks: [] },
+    { providers: [], context_management: {}, mcp_servers: {}, mcp_warnings: [], hooks: [] },
   );
   validateProviders(config.providers);
   return config;

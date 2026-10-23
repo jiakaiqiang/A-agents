@@ -72,9 +72,10 @@ export async function* collectStream(
     }
   } catch (error) {
     // 取消不是错误，转成 aborted 让循环走正常停止路径；其余错误交 loop 兜成 stream_error。
-    if (!isAbort(error)) throw error;
+    if (!isAbort(error) && !options.signal?.aborted) throw error;
     return { text, thinkingBlocks, toolUses, usage, stopReason, aborted: true };
   }
 
-  return { text, thinkingBlocks, toolUses, usage, stopReason, aborted: false };
+  // 某些 SDK 在 abort 后正常结束流，不会抛 AbortError，仍须按用户取消收尾。
+  return { text, thinkingBlocks, toolUses, usage, stopReason, aborted: options.signal?.aborted ?? false };
 }

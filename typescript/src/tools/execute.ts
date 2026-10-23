@@ -27,6 +27,11 @@ export async function runTool(
   args: Record<string, unknown>,
   context: ToolContext,
 ): Promise<ToolResult> {
+  // 白名单拦截（Skill spec F10）：早于懒池补载，集合外的延迟工具也不会被借道加载。
+  if (context.allowedTools && !context.allowedTools.has(name)) {
+    return fail("not_allowed", `工具 ${name} 不在当前可用工具中`);
+  }
+
   let tool = registry.get(name);
 
   // 安全网（spec LF5）：registry 未命中先查懒池自动补载——

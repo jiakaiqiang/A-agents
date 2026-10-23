@@ -28,6 +28,17 @@ export interface LoopOptions {
   /** 本轮挂在每次模型请求上的补充指令，只影响这一轮，不写入会话历史（spec F16）。 */
   reminders?: string[];
   maxIterations?: number; // 缺省取 MAX_ITERATIONS，测试可覆盖
+  /** 已激活 Skill 的钉住指令与可用工具；缺省时不钉住、不收窄（Skill spec F8、F10）。 */
+  skills?: SkillView;
+}
+
+/**
+ * Agent 循环看 Skill 状态的窄接口（Skill plan「核心数据结构」）。
+ * 定义在这里而不是 skills 模块，循环就不必 import skills，依赖保持单向。
+ */
+export interface SkillView {
+  pinnedText(): string; // 没有激活时为 ""
+  allowedTools(): ReadonlySet<string> | null; // null 表示不收窄
 }
 
 function addUsage(target: UsageInfo, current: UsageInfo): void {
@@ -110,22 +121,33 @@ export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent>
 
       // 请求前两层检查（上下文 spec F6）：先轻量预防已在结果回灌前做，这里做整体兜底判断。
       const compactionNotice = await options.compactor?.maintain(signal);
-      if (compactionNotice) yield { type: "compaction", text: compactionNotice };
+      if (compactionNotice) {
+        if (options.compactor?.circuitOpen) {
+          yield { type: "notice", text: compactionNotice, isError: true };
+        } else {
+          yield { type: "compaction", text: compactionNotice };
+        }
+      }
 
       iterations += 1;
       yield { type: "progress", iteration: iterations, phase: "model", toolsExecuted };
 
-      // 全部工具都下发：计划档对改文件的约束改由权限层逐次确认承担，不再靠摘掉工具（权限 spec F19）。
-      const tools = registry.definitionsFor(protocol);
+      // Skill 状态每次迭代读一次：模型本轮中途 loadSkill 激活的 Skill，下一次迭代就钉住并收窄（Skill spec F8、F10）。
+      const allowed = options.skills?.allowedTools() ?? null;
+      const pinned = options.skills?.pinnedText() || undefined;
+      // 未收窄时全部工具都下发：计划档对改文件的约束由权限层逐次确认承担，不靠摘掉工具（权限 spec F19）。
+      const tools = registry.definitionsFor(protocol, allowed ? { only: allowed } : undefined);
       // 延迟目录每轮重算（spec LF4）：懒池随发现收缩，空池不注入。
-      const lazyEntries = registry.lazyNames().map((name) => ({
-        name,
-        description: registry.getLazy(name)?.description ?? name,
-      }));
+      // 收窄时只列白名单内的延迟工具；白名单不含 toolSearch 时不注入，免得诱导会被拦下的调用（Skill spec F10）。
+      const lazyEntries = allowed && !allowed.has("toolSearch")
+        ? []
+        : registry.lazyNames()
+          .filter((name) => !allowed || allowed.has(name))
+          .map((name) => ({ name, description: registry.getLazy(name)?.description ?? name }));
       const catalog = lazyCatalogReminder(lazyEntries);
       const reminders = catalog ? [...baseReminders, catalog] : baseReminders;
       //进行流相应；补充指令每次迭代都挂，否则工具结果回灌后模式约束就断了
-      const response = yield* collectStream(client, conversation, tools, { signal, reminders });
+      const response = yield* collectStream(client, conversation, tools, { signal, reminders, pinned });
       addUsage(accumulated, response.usage);
       // 锚定真实 usage：估算器后续只对增量字符折算（上下文 spec F1）。
       options.compactor?.noteUsage(conversation.chars(), response.usage.inputTokens);
@@ -133,7 +155,8 @@ export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent>
       finalText = response.text;
       //工具调用为空，说明模型不再请求工具，本轮自然完成（F5）。
       if (response.toolUses.length === 0) {
-        if (finalText) conversation.addAssistantMessage(finalText);
+        if (response.thinkingBlocks.length) conversation.addAssistantFull(finalText, response.thinkingBlocks);
+        else if (finalText) conversation.addAssistantMessage(finalText);
         lastWriteWasToolResult = false;
         return yield* finish(response.aborted ? "cancelled" : "complete");
       }
@@ -156,15 +179,23 @@ export async function* runLoop(options: LoopOptions): AsyncGenerator<AgentEvent>
 
       const batches = planBatches(response.toolUses, registry);
       // runBatches 对每个调用都产出一条结果，results 与 toolUses 长度必然相等（F3）。
-      const results = yield* runBatches(batches, registry, { workDir, signal, permission });
+      const results = yield* runBatches(batches, registry, { workDir, signal, permission, ...(allowed ? { allowedTools: allowed } : {}) });
       toolsExecuted += results.filter((item) => !item.isError).length;
       // 轻量预防（上下文 spec F2/F3）：结果写入历史前决定存盘或内联。
-      const processed = options.compactor ? await options.compactor.applyLightPrevention(results) : results;
+      const toolNames = new Map(response.toolUses.map((call) => [call.id, call.name]));
+      const processed = options.compactor ? await options.compactor.applyLightPrevention(results, toolNames) : results;
       conversation.addToolResultMessage(processed);
+      for (const block of processed) {
+        yield {
+          type: "tool_output",
+          toolId: block.toolUseId,
+          content: block.content.includes("[完整输出已存盘：") ? block.content : "",
+        };
+      }
       lastWriteWasToolResult = true;
 
-      // 全部调用都指向未知工具才算无效迭代；混合情况说明模型仍在推进任务（F8）。
-      const allUnknown = response.toolUses.every((call) => !registry.get(call.name));
+      // 全部调用都指向未知工具或白名单外工具才算无效迭代；混合情况说明模型仍在推进任务（F8、Skill spec F10）。
+      const allUnknown = response.toolUses.every((call) => !registry.get(call.name) || (allowed !== null && !allowed.has(call.name)));
       invalidStreak = allUnknown ? invalidStreak + 1 : 0;
       if (invalidStreak >= MAX_INVALID_ITERATIONS) return yield* finish("invalid_tools");
 

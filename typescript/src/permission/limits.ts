@@ -69,6 +69,8 @@ export const MODE_FALLBACK: Record<PermissionMode, Record<ToolClass, "allow" | "
 
 /** 工具分类（spec F14）：只读归 read，Bash 单列，其余算写类。 */
 export function classifyTool(tool: Tool): ToolClass {
+  // 系统级工具（loadSkill）本身不改文件也不执行命令：任何档位都不询问（Skill spec F7）。
+  if (tool.system) return "read";
   if (tool.readOnly) return "read";
   if (tool.name === "Bash") return "bash";
   return "write";

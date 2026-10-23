@@ -2,13 +2,12 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { estimateChars, type TokenEstimator } from "./tokens.js";
-import { TOOL_RESULT_MAX_CHARS } from "../tools/limits.js";
+import { CHARS_PER_TOKEN, estimateChars, type TokenEstimator } from "./tokens.js";
 import type { ToolResult } from "../tools/types.js";
 
 export const SPILL_PREVIEW_CHARS = 500;
 export const TOOL_SPILL_TOKENS = 2_000;
-export const MESSAGE_SPILL_TOKENS = 8_000;
+export const MESSAGE_SPILL_TOKENS = 4_000;
 
 /** 单条结果的存盘结论：spilled=false 时 content 即原文（或 30K 截断原文）。 */
 export interface SpillOutcome {
@@ -30,7 +29,8 @@ export function spillToFile(toolName: string, content: string, workDir: string):
   const directory = join(workDir, ".mewcode", "tool-outputs");
   try {
     mkdirSync(directory, { recursive: true });
-    const path = join(directory, `${toolName}-${timestampName()}.txt`);
+    const safeName = toolName.replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").replace(/[. ]+$/g, "").slice(0, 80) || "tool";
+    const path = join(directory, `${safeName}-${timestampName()}.txt`);
     writeFileSync(path, content, "utf-8");
     return path.split("\\").join("/");
   } catch {
@@ -40,8 +40,8 @@ export function spillToFile(toolName: string, content: string, workDir: string):
 }
 
 /** 预览 = 开头 ~500 字符 + 一行存盘提示。 */
-export function buildPreview(content: string, filePath: string): string {
-  const head = content.slice(0, SPILL_PREVIEW_CHARS);
+export function buildPreview(content: string, filePath: string, previewChars = SPILL_PREVIEW_CHARS): string {
+  const head = content.slice(0, previewChars);
   return `${head}\n\n[完整输出已存盘：${filePath}（${content.length} 字符）。需要细节请用 Read 读取该文件]`;
 }
 
@@ -54,16 +54,20 @@ export async function maybeSpillResult(
   result: ToolResult,
   workDir: string,
   estimator: TokenEstimator,
+  spillTokens = TOOL_SPILL_TOKENS,
+  previewChars = SPILL_PREVIEW_CHARS,
 ): Promise<SpillOutcome> {
-  const tokens = estimator.estimate(estimateChars({
+  // 单条结果是独立预算，不能使用会话级 usage 锚点，否则锚点的 inputTokens
+  // 会把几字节的小结果误判成数千 tokens。
+  const tokens = Math.ceil(estimateChars({
     role: "user",
     content: "",
     toolResults: [{ toolUseId: "spill-check", content: result.content }],
-  }));
-  if (tokens <= TOOL_SPILL_TOKENS) {
+  }) / CHARS_PER_TOKEN);
+  if (tokens <= spillTokens) {
     return { content: result.content, spilled: false };
   }
   const filePath = spillToFile(toolName, result.content, workDir);
   if (!filePath) return { content: result.content, spilled: false };
-  return { content: buildPreview(result.content, filePath), spilled: true, filePath };
+  return { content: buildPreview(result.content, filePath, previewChars), spilled: true, filePath };
 }

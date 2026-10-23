@@ -26,6 +26,11 @@ export const MAX_CONCURRENT_TOOLS = 8;
 
 // ── 系统提示词与运行期注入（spec N8）──
 // 模块优先级，升序拼装：固定模块在前，可选模块居中，环境信息在最末。
+// 单个 Skill 文件的大小上限：超过即跳过，防止一个超大文件撑爆上下文（Skill spec N5）。
+export const SKILL_FILE_MAX_BYTES = 64 * 1024;
+// Skill 目录里一句说明的截断上限（Skill spec N1）。
+export const SKILL_CATALOG_DESC_MAX_CHARS = 80;
+
 export const PROMPT_PRIORITY = {
   identity: 0,
   safety: 10,
@@ -42,6 +47,19 @@ export const PROMPT_PRIORITY = {
 
 // 计划模式完整版指令的重复间隔轮数：第 1 轮与之后每隔 5 轮注入完整版，其余轮次精简版。
 export const PLAN_REMINDER_INTERVAL = 5;
+
+// 记忆系统（memory spec N6）：所有阈值集中维护。
+export const INSTRUCTION_FILE_NAME = "MEWCODE.md"; // F1
+export const INCLUDE_MAX_DEPTH = 5; // F2
+export const MEMORY_INDEX_MAX_LINES = 200; // F11
+export const MEMORY_INDEX_MAX_BYTES = 25_000; // F11
+export const SESSION_GAP_REMINDER_MS = 4 * 60 * 60 * 1000; // F8
+export const SESSION_EXPIRE_MS = 30 * 24 * 60 * 60 * 1000; // F9
+export const SESSION_LIST_LIMIT = 20; // F7
+export const SESSION_TITLE_MAX_CHARS = 50; // F6
+export const MEMORY_LOCK_WAIT_MS = 2_000; // F16：等待记忆互斥的上限
+export const MEMORY_LOCK_STALE_MS = 30_000; // F16：写入阶段只有毫秒级，持有超过此时长必是残留
+export const LOCK_RETRY_INTERVAL_MS = 50; // F16：抢锁失败后的重试间隔
 
 // 最小可缓存前缀长度门槛，按整个请求前缀（工具定义 + 系统提示词）计算。
 // Anthropic Opus / Sonnet 为 1024，Haiku 为 2048；更换模型时需复核此值。

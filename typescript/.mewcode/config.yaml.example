@@ -11,4 +11,15 @@ providers:
      protocol: openai
      base_url: https://api.123nhh.com/
      model: deepseek-v4-flash-0731
-     api_key: sk-cn2m0dQ2ENMmuv1BPs690q7THSotVLr9gYpbywvLcS2NcuWd
+     api_key: "" # Set via the provider API key environment variable
+
+# 上下文管理阈值（可选，省略时使用程序默认值）
+# context_management:
+#   auto_margin_tokens: 13000      # 自动压缩安全余量：上下文窗口减去此值后触发压缩（tokens）
+#   manual_margin_tokens: 3000     # 手动 /compact 后剩余空间低于此值时显示警告（tokens）
+#   keep_recent_tokens: 10000      # 压缩时保留尾部近期原文的 token 预算
+#   keep_recent_natural: 5         # 压缩时至少保留的近期自然语言消息数
+#   max_summary_failures: 3        # 摘要连续失败达到此次数后暂停自动压缩
+#   tool_spill_tokens: 2000        # 单个工具结果超过此大小时写入磁盘（tokens）
+#   message_spill_tokens: 4000     # 同一轮工具结果合计超过此大小时继续写盘（tokens）
+#   spill_preview_chars: 500       # 写盘后在对话和 TUI 中保留的结果预览字符数

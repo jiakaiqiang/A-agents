@@ -18,29 +18,45 @@ export interface ToolResultBlock {
 export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
+  display?: string; // 仅供界面展示（如提示词命令的原命令），不发给模型
   thinkingBlocks?: ThinkingBlock[];
   toolUses?: ToolUseBlock[];
   toolResults?: ToolResultBlock[];
 }
 
+export interface HistoryRecorder {
+  onAppend(message: Message): void;
+  onReplace(messages: Message[]): void;
+}
+
 export class ConversationManager {
   private history: Message[] = [];
   private ltmInjected = false;
+  private recorder: HistoryRecorder | null = null;
 
-  addUserMessage(content: string): void {
-    this.history.push({ role: "user", content });
+  setRecorder(recorder: HistoryRecorder | null): void {
+    this.recorder = recorder;
+  }
+
+  private push(message: Message): void {
+    this.history.push(message);
+    this.recorder?.onAppend(message);
+  }
+
+  addUserMessage(content: string, display?: string): void {
+    this.push(display !== undefined && display !== content ? { role: "user", content, display } : { role: "user", content });
   }
 
   addAssistantMessage(content: string): void {
-    this.history.push({ role: "assistant", content });
+    this.push({ role: "assistant", content });
   }
 
   addAssistantFull(content: string, thinkingBlocks?: ThinkingBlock[], toolUses?: ToolUseBlock[]): void {
-    this.history.push({ role: "assistant", content, thinkingBlocks, toolUses });
+    this.push({ role: "assistant", content, thinkingBlocks, toolUses });
   }
 
   addToolUseMessage(content: string, toolUses: ToolUseBlock[]): void {
-    this.history.push({ role: "assistant", content, toolUses });
+    this.push({ role: "assistant", content, toolUses });
   }
 
   addAssistantMessageWithTools(content: string, toolUses: ToolUseBlock[]): void {
@@ -48,7 +64,7 @@ export class ConversationManager {
   }
 
   addToolResultMessage(toolResults: ToolResultBlock[]): void {
-    this.history.push({ role: "user", content: "", toolResults });
+    this.push({ role: "user", content: "", toolResults });
   }
 
   addToolResultsMessage(toolResults: ToolResultBlock[]): void {
@@ -56,7 +72,7 @@ export class ConversationManager {
   }
 
   addSystemReminder(content: string): void {
-    this.history.push({ role: "system", content });
+    this.push({ role: "system", content });
   }
 
   injectLongTermMemory(_content: string): void {
@@ -65,6 +81,12 @@ export class ConversationManager {
 
   replaceWithCompacted(messages: Message[]): void {
     this.history = [...messages];
+    this.recorder?.onReplace(this.getMessages());
+  }
+
+  /** 恢复已有记录，不把同一段历史重复写盘。 */
+  restore(messages: Message[]): void {
+    this.history = structuredClone(messages);
   }
 
   getMessages(): Message[] {

@@ -57,6 +57,12 @@ describe("buildSystemPrompt", () => {
     expect(segments.stable).not.toContain(environment.model);
   });
 
+  test("解释问题时要求从原理说明，且始终用中文回答", () => {
+    const { stable } = buildSystemPrompt(environment, { tools: toolSummaries() });
+    expect(stable).toContain("用中文回答");
+    expect(stable).toContain("用户要求解释问题时，从原理出发讲清机制、因果关系和适用条件");
+  });
+
   test("七个固定模块按优先级出现在稳定段", () => {
     const { stable } = buildSystemPrompt(environment, { tools: toolSummaries() });
     const headings = ["# 身份", "# 安全边界", "# 任务模式", "# 行为", "# 代码规范", "# 工具使用", "# 输出风格"];

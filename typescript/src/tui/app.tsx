@@ -1,16 +1,19 @@
-import { Box, Static, Text, useApp, useInput } from "ink";
+import { Box, Static, Text, useApp, useInput, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
-import type { HookConfig, ProviderConfig } from "../config/config.js";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { ContextManagementConfig, HookConfig, ProviderConfig } from "../config/config.js";
 import { getContextWindowAsync } from "../config/config.js";
 import type { McpServerReport } from "../mcp/types.js";
 import { ConversationManager } from "../conversation/conversation.js";
 import { createClient, type LLMClient } from "../llm/client.js";
 import { getContextWindow } from "../config/config.js";
-import { Compactor, MANUAL_MARGIN_TOKENS } from "../context/compactor.js";
+import { Compactor, resolveCompactionSettings } from "../context/compactor.js";
 import { TokenEstimator } from "../context/tokens.js";
-import { buildSystemPrompt, detectEnvironment } from "../prompt/builder.js";
+import { buildSystemPrompt, detectEnvironment, type SystemPromptSegments } from "../prompt/builder.js";
 import { ModeTracker } from "../prompt/reminder.js";
-import type { AgentMode, LoopPhase } from "../agent/events.js";
+import type { AgentEvent, AgentMode, LoopPhase } from "../agent/events.js";
 import { runLoop } from "../agent/loop.js";
 import { appendLocalRule, loadPermissionConfig } from "../permission/config.js";
 import { nextPermissionMode } from "../permission/limits.js";
@@ -24,6 +27,23 @@ import { Spinner } from "./spinner.js";
 import { StatusBar } from "./status-bar.js";
 import { brand, symbols } from "./styles.js";
 import { randomCompletionVerb } from "./verbs.js";
+import { MemoryStore, memoryDir, type NoteScope } from "../memory/notes.js";
+import { listSessions, newSessionId, SessionWriter, sessionsDir, type SessionInfo } from "../memory/session.js";
+import { resumeSession } from "../memory/resume.js";
+import { MemoryUpdater, TurnCollector } from "../memory/updater.js";
+import { SessionSelect } from "./session-select.js";
+import { sessionLockPath, tryAcquire, type Release } from "../memory/lock.js";
+import { createBuiltinRegistry } from "../commands/builtins/index.js";
+import { suggest } from "../commands/completion.js";
+import { dispatch } from "../commands/dispatcher.js";
+import { MODE_TAGS } from "../commands/format.js";
+import type { CommandRegistry } from "../commands/registry.js";
+import type { CommandUI } from "../commands/types.js";
+import { skillCatalogSection } from "../skills/catalog.js";
+import { resultMessage, runIsolatedSkill } from "../skills/isolated.js";
+import { SkillManager } from "../skills/manager.js";
+import type { IsolatedOutcome, SkillDef } from "../skills/types.js";
+import type { ToolContext } from "../tools/types.js";
 
 type AppState = "providerSelect" | "chat";
 
@@ -42,22 +62,22 @@ const STREAM_TAIL_LINES = 8;
  */
 const MODE_INFO: Record<PermissionMode, { label: string; agentMode: AgentMode; hint: string }> = {
   plan: {
-    label: "计划",
+    label: MODE_TAGS.plan,
     agentMode: "plan",
     hint: "计划档：模型会先产出计划，改文件与执行命令每次都会请你确认。",
   },
   default: {
-    label: "默认",
+    label: MODE_TAGS.default,
     agentMode: "execute",
     hint: "默认档：改文件与执行命令需要你逐次确认。",
   },
   acceptEdits: {
-    label: "接受编辑",
+    label: MODE_TAGS.acceptEdits,
     agentMode: "execute",
     hint: "接受编辑档：改文件自动放行，执行命令仍需确认。",
   },
   bypass: {
-    label: "放行",
+    label: MODE_TAGS.bypass,
     agentMode: "execute",
     hint: "放行档：工具调用不再询问。危险命令黑名单与路径沙箱仍然生效，不可放开。",
   },
@@ -87,13 +107,39 @@ export function App({
   hooks: _hooks,
   registry,
   mcpReports = [],
+  contextManagement = {},
+  startup = { instructions: "", memory: "", warnings: [] },
+  workDir = process.cwd(),
+  homeDir = homedir(),
+  commands,
+  skills,
+  skillReport = { warnings: [], summary: "" },
 }: {
   providers: ProviderConfig[];
   hooks: HookConfig[];
   registry: ToolRegistry;
+  commands?: CommandRegistry;
+  skills?: SkillManager;
+  skillReport?: { warnings: string[]; summary: string };
   mcpReports?: McpServerReport[];
+  contextManagement?: ContextManagementConfig;
+  startup?: { instructions: string; memory: string; warnings: string[] };
+  workDir?: string;
+  homeDir?: string;
 }) {
   const { exit } = useApp();
+  const { write: writeStdout } = useStdout();
+  // main 在启动期构造并检查冲突后传入；测试与 fixture 不传时用内置命令兜底。
+  const fallbackCommandsRef = useRef<CommandRegistry | null>(null);
+  const commandRegistry = commands ?? (fallbackCommandsRef.current ??= createBuiltinRegistry());
+  // main 在 MCP 连接后装配好 Skill 传入；测试与 fixture 不传时用空集合兜底，行为与接入前一致。
+  const fallbackSkillsRef = useRef<SkillManager | null>(null);
+  const skillManager = skills ?? (fallbackSkillsRef.current ??= new SkillManager([]));
+  const segmentsRef = useRef<SystemPromptSegments | null>(null);
+  // 补全列表是否可见：InputBox 渲染期写入，Esc 中断判断先读它（斜杠命令 spec F10）。
+  const suggestionsOpenRef = useRef(false);
+  const [staticKey, setStaticKey] = useState(0);
+  const [, setStatusTick] = useState(0);
   const [appState, setAppState] = useState<AppState>(providers.length === 1 ? "chat" : "providerSelect");
   const [selectedProvider, setSelectedProvider] = useState<ProviderConfig>(providers[0]!);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -107,11 +153,23 @@ export function App({
   const [error, setError] = useState<string | null>(null);
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [mode, setMode] = useState<AgentMode>("execute");
+  // 独立 Skill 运行器在工具执行期间被调用，此时组件可能已重渲染；从 ref 读当前模式（Skill spec F11）。
+  const modeRef = useRef<AgentMode>("execute");
+  modeRef.current = mode;
   const [iteration, setIteration] = useState(0);
   const [phase, setPhase] = useState<LoopPhase>("model");
-  const permissionConfigRef = useRef(loadPermissionConfig());
+  const permissionConfigRef = useRef(loadPermissionConfig(workDir));
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(permissionConfigRef.current.mode);
   const [pendingConfirm, setPendingConfirm] = useState<ConfirmRequest | null>(null);
+  const [resumeList, setResumeList] = useState<SessionInfo[] | null>(null);
+  const [isMaintaining, setIsMaintaining] = useState(false);
+  const startupRef = useRef(startup);
+  const pendingResumeRef = useRef<SessionInfo[] | null>(null);
+  const activityRef = useRef<"idle" | "agent" | "maintenance">("idle");
+  const memoryUpdaterRef = useRef<MemoryUpdater | null>(null);
+  const sessionWriterRef = useRef<SessionWriter | null>(null);
+  // 当前会话的跨进程占用（F15）：随「当前是哪个会话」切换，不放在 SessionWriter 里。
+  const sessionReleaseRef = useRef<Release | null>(null);
 
   const clientRef = useRef<LLMClient | null>(null);
   const compactorRef = useRef<Compactor | null>(null);
@@ -130,7 +188,42 @@ export function App({
   const permissionModeRef = useRef<PermissionMode>(permissionConfigRef.current.mode);
   // 挂起的确认 Promise 的 resolve；Esc 中断时必须兑付，否则 runLoop 收不了尾。
   const confirmResolveRef = useRef<((choice: ConfirmChoice) => void) | null>(null);
-  const workDir = process.cwd();
+  const compactionSettings = resolveCompactionSettings(contextManagement);
+
+  function addNotice(content: string, isError = false): void {
+    setMessages((previous) => {
+      const next: ChatMessage[] = [...previous, { role: "system", content, isError }];
+      advanceCommit(next);
+      return next;
+    });
+  }
+
+  function createWriter(id: string): SessionWriter {
+    return new SessionWriter(id, workDir, (message) => addNotice(`会话存档写入失败：${message}，本会话不再存档`, true));
+  }
+
+  /** 开一个新会话存档并换占用：启动与 /clear 共用。 */
+  function startNewSession(): string {
+    const id = newSessionId(new Date(), (candidate) => existsSync(join(workDir, ".mewcode", "sessions", `${candidate}.jsonl`)));
+    sessionWriterRef.current = createWriter(id);
+    conversationRef.current.setRecorder(sessionWriterRef.current);
+    // 新会话即占用（F15）；新 ID 不会被占，失败只是不占用，不影响存档。
+    sessionReleaseRef.current?.();
+    sessionReleaseRef.current = tryAcquire(sessionLockPath(workDir, id));
+    return id;
+  }
+
+  if (!sessionWriterRef.current) startNewSession();
+
+  // 退出（含 /exit、Ctrl+C）与卸载时释放会话占用；强杀留下的锁由 pid 存活检测识别为残留。
+  useEffect(() => {
+    const release = () => sessionReleaseRef.current?.();
+    process.on("exit", release);
+    return () => {
+      process.off("exit", release);
+      release();
+    };
+  }, []);
 
   /**
    * 把 committed 边界推进到连续定稿前缀的末尾。
@@ -187,6 +280,8 @@ export function App({
 
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") {
+      memoryUpdaterRef.current?.abort();
+      if (confirmResolveRef.current) settleConfirm("deny");
       abortControllerRef.current?.abort();
       exit();
       return;
@@ -198,7 +293,8 @@ export function App({
       return;
     }
     // Esc 只取消本轮，会话保持可用（spec F7）。
-    if (key.escape && isStreaming) {
+    // 补全列表打开时 Esc 只收起列表（由 InputBox 处理），不中断本轮。
+    if (key.escape && isStreaming && !suggestionsOpenRef.current) {
       // 有挂起的确认时先按拒绝兑付，否则 Promise 永久悬空、runLoop 无法收尾。
       if (confirmResolveRef.current) settleConfirm("deny");
       abortControllerRef.current?.abort();
@@ -214,12 +310,19 @@ export function App({
       content: mcpReportText(report),
       isError: report.status === "failed" || report.status === "timeout",
     }));
-    if (warnings.length === 0 && mcpMessages.length === 0) return;
+    // Skill 加载告警与摘要同批呈现（Skill spec F14）。
+    const skillMessages: ChatMessage[] = [
+      ...skillReport.warnings.map((text) => ({ role: "system" as const, content: `Skill：${text}`, isError: true })),
+      ...(skillReport.summary ? [{ role: "system" as const, content: skillReport.summary }] : []),
+    ];
+    if (warnings.length === 0 && mcpMessages.length === 0 && startupRef.current.warnings.length === 0 && skillMessages.length === 0) return;
     setMessages((previous) => {
       const next: ChatMessage[] = [
         ...previous,
         ...warnings.map((text) => ({ role: "system" as const, content: `权限配置：${text}`, isError: true })),
         ...mcpMessages,
+        ...startupRef.current.warnings.map((text) => ({ role: "system" as const, content: `启动记忆：${text}`, isError: true })),
+        ...skillMessages,
       ];
       advanceCommit(next);
       return next;
@@ -237,13 +340,26 @@ export function App({
     }));
     const segments = buildSystemPrompt(
       detectEnvironment(workDir, selectedProvider.model),
-      { tools: toolSummaries },
+      {
+        tools: toolSummaries,
+        customInstructions: startupRef.current.instructions,
+        memory: startupRef.current.memory,
+        // Skill 目录会话内不变，进稳定段（Skill spec F6、N2）。
+        skills: skillCatalogSection(skillManager.list()),
+      },
     );
+    // 独立 Skill 指定 model 时要用同一份提示词另建客户端（Skill plan「App 接入要点」）。
+    segmentsRef.current = segments;
     clientRef.current = null;
+    memoryUpdaterRef.current?.abort();
     void createClient(selectedProvider, segments)
       .then((client) => {
         if (!cancelled) {
           clientRef.current = client;
+          memoryUpdaterRef.current = new MemoryUpdater(client, {
+            user: new MemoryStore(memoryDir("user", workDir, homeDir)),
+            project: new MemoryStore(memoryDir("project", workDir, homeDir)),
+          }, (names) => addNotice(`已更新记忆：${names.join("、")}`));
           // Compactor 跨轮持有熔断计数与估算锚点，随 client 一起就绪（上下文 spec F6）。
           compactorRef.current = new Compactor(
             client,
@@ -251,6 +367,7 @@ export function App({
             new TokenEstimator(),
             workDir,
             getContextWindow(selectedProvider),
+            compactionSettings,
           );
         }
       })
@@ -258,7 +375,13 @@ export function App({
         if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
       });
     void getContextWindowAsync(selectedProvider).catch(() => undefined);
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      memoryUpdaterRef.current?.abort();
+      abortControllerRef.current?.abort();
+      confirmResolveRef.current?.("deny");
+      confirmResolveRef.current = null;
+    };
   }, [appState, selectedProvider, workDir]);
 
   /**
@@ -271,7 +394,8 @@ export function App({
       setError("LLM 客户端尚未就绪，无法压缩。");
       return;
     }
-    if (compactor.circuitOpen) {
+    const wasCircuitOpen = compactor.circuitOpen;
+    if (wasCircuitOpen) {
       setMessages((previous) => [...previous, { role: "system", content: "压缩连续失败中，正在重试手动压缩……" }]);
     }
     const result = await compactor.compactManually();
@@ -280,11 +404,18 @@ export function App({
       setError(`压缩失败：${result.error}${suffix}`);
       return;
     }
-    const parts = [`已压缩历史：${result.summaryMessageCount} 条消息 → 摘要 + 近期 ${result.recentCount} 条原文`];
-    if (compactor.remainingTokens() < MANUAL_MARGIN_TOKENS) {
+    if (!result.compacted) {
+      setMessages((previous) => [...previous, { role: "system", content: "当前历史不足以压缩。" }]);
+      return;
+    }
+    const parts = [
+      `上下文已从约 ${result.beforeTokens ?? "?"} tokens 压缩到约 ${result.afterTokens ?? "?"} tokens；已压缩历史：${result.summaryMessageCount} 条消息 → 摘要 + 近期 ${result.recentCount} 条原文`,
+      `摘要内容：\n${result.summary ?? "（摘要内容为空）"}`,
+    ];
+    if (compactor.remainingTokens() < compactionSettings.manualMarginTokens) {
       parts.push("警告：压缩后剩余空间不足 3K tokens，下一次请求可能仍超限。");
     }
-    if (compactor.failureCount === 0) {
+    if (wasCircuitOpen && !compactor.circuitOpen) {
       parts.push("自动压缩已恢复。");
     }
     setMessages((previous) => {
@@ -294,30 +425,18 @@ export function App({
     });
   }
 
-  async function runAgentLoop(): Promise<void> {
+  async function runAgentLoop(userText: string): Promise<void> {
     const client = clientRef.current;
     if (!client) {
       setError("正在初始化 LLM 客户端，请稍后重试。");
       setIsStreaming(false);
+      activityRef.current = "idle";
       return;
     }
 
-    let buffer = "";
-    let flushedAny = false;
-    // 每次迭代的正文各自落成一条消息，避免被下一次迭代的流式文本覆盖（spec F28）。
-    function flushBuffer(): void {
-      if (!buffer) return;
-      const text = buffer;
-      buffer = "";
-      flushedAny = true;
-      streamingTextRef.current = "";
-      setStreamingText("");
-      setMessages((previous) => {
-        const next: ChatMessage[] = [...previous, { role: "assistant", content: text }];
-        advanceCommit(next);
-        return next;
-      });
-    }
+    const collector = new TurnCollector(userText);
+    const updater = memoryUpdaterRef.current;
+    const renderer = createEventRenderer();
 
     try {
       for await (const event of runLoop({
@@ -332,85 +451,141 @@ export function App({
         signal: abortControllerRef.current?.signal,
         // 本轮的模式指令：首轮完整、间隔轮次重复、其余精简（spec F17–F19）。
         reminders: modeTrackerRef.current.nextTurn(),
+        // 已激活 Skill 的钉住指令与工具白名单，每次迭代读一次（Skill spec F8、F10）。
+        skills: skillManager,
       })) {
-        switch (event.type) {
-          case "text":
-            buffer += event.text;
-            streamingTextRef.current = buffer;
-            setStreamingText(buffer);
-            break;
-          case "thinking":
-            // 思考增量本期不渲染。
-            break;
-          case "progress":
-            if (event.phase === "tools") flushBuffer();
-            setIteration(event.iteration);
-            setPhase(event.phase);
-            break;
-          case "tool_start":
-            // 工具行先出现，执行结束后按 toolId 原地补摘要。
-            setMessages((previous) => [...previous, {
-              role: "tool_use",
-              toolId: event.toolId,
-              content: `${symbols.dot} ${event.argSummary}`,
-            }]);
-            break;
-          case "tool_end":
-            completedToolIdsRef.current.add(event.toolId);
-            setMessages((previous) => {
-              const next = previous.map((message) => message.toolId === event.toolId
-                ? { ...message, content: `${message.content} — ${event.summary}`, isError: !event.ok }
-                : message);
-              advanceCommit(next);
-              return next;
-            });
-            break;
-          case "usage":
-            setInputTokens(event.usage.inputTokens);
-            setOutputTokens(event.usage.outputTokens);
-            setCacheReadTokens(event.usage.cacheReadInputTokens);
-            setCacheCreationTokens(event.usage.cacheCreationInputTokens);
-            break;
-          case "notice":
-            setMessages((previous) => {
-              const next: ChatMessage[] = [...previous, { role: "system", content: event.text, isError: event.isError }];
-              advanceCommit(next);
-              return next;
-            });
-            break;
-          case "compaction":
-            // 压缩提示与 notice 同路径渲染（上下文 spec F15）。
-            setMessages((previous) => {
-              const next: ChatMessage[] = [...previous, { role: "system", content: event.text }];
-              advanceCommit(next);
-              return next;
-            });
-            break;
-          case "done":
-            flushBuffer();
-            if (event.reason === "complete") {
-              if (flushedAny || event.toolsExecuted > 0) setCompletionMark(randomCompletionVerb());
-              else setError("模型返回了空内容，请检查 provider 协议、端点地址和模型名称。");
-            } else if (event.reason === "stream_error") {
-              setError(event.errorMessage ?? "请求失败");
-            }
-            // 其余停止原因已由 notice 事件呈现，不重复提示。
-            setMessages((previous) => {
-              advanceCommit(previous);
-              return previous;
-            });
-            break;
+        collector.observe(event);
+        if (event.type !== "done") {
+          renderer.render(event);
+          continue;
         }
+        renderer.flush();
+        if (event.reason === "complete") {
+          if (renderer.flushedAny() || event.toolsExecuted > 0) setCompletionMark(randomCompletionVerb());
+          else setError("模型返回了空内容，请检查 provider 协议、端点地址和模型名称。");
+        } else if (event.reason === "stream_error") {
+          setError(event.errorMessage ?? "请求失败");
+        }
+        // 其余停止原因已由 notice 事件呈现，不重复提示。
+        setMessages((previous) => {
+          advanceCommit(previous);
+          return previous;
+        });
       }
+      const digest = collector.digest();
+      if (digest && !abortControllerRef.current?.signal.aborted) updater?.enqueue(digest);
     } catch (cause) {
       const message = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
       setError(message);
     } finally {
-      setIsStreaming(false);
-      setStreamingText("");
+      finishTurn();
+    }
+  }
+
+  /**
+   * 事件渲染器：主循环与独立 Skill 子对话共用（Skill plan「App 接入要点」）。
+   * 子对话传 prefix（如 "[test] "）给工具行与提示加前缀；它的正文不流式显示（结果单独回流），也不更新状态栏 Token。
+   */
+  function createEventRenderer(prefix = "", options: { streamText?: boolean; updateUsage?: boolean } = {}) {
+    const streamText = options.streamText ?? true;
+    const updateUsage = options.updateUsage ?? true;
+    let buffer = "";
+    let flushedAny = false;
+    // 每次迭代的正文各自落成一条消息，避免被下一次迭代的流式文本覆盖（spec F28）。
+    function flush(): void {
+      if (!buffer) return;
+      const text = buffer;
+      buffer = "";
+      flushedAny = true;
       streamingTextRef.current = "";
-      setIteration(0);
-      abortControllerRef.current = null;
+      setStreamingText("");
+      setMessages((previous) => {
+        const next: ChatMessage[] = [...previous, { role: "assistant", content: text }];
+        advanceCommit(next);
+        return next;
+      });
+    }
+    function render(event: Exclude<AgentEvent, { type: "done" }>): void {
+      switch (event.type) {
+        case "text":
+          if (!streamText) break;
+          buffer += event.text;
+          streamingTextRef.current = buffer;
+          setStreamingText(buffer);
+          break;
+        case "thinking":
+          // 思考增量本期不渲染。
+          break;
+        case "progress":
+          if (event.phase === "tools") flush();
+          setIteration(event.iteration);
+          setPhase(event.phase);
+          break;
+        case "tool_start":
+          // 工具行先出现，执行结束后按 toolId 原地补摘要。
+          setMessages((previous) => [...previous, {
+            role: "tool_use",
+            toolId: event.toolId,
+            content: `${prefix}${symbols.dot} ${event.argSummary}`,
+          }]);
+          break;
+        case "tool_end":
+          setMessages((previous) => {
+            const next = previous.map((message) => message.toolId === event.toolId
+              ? { ...message, content: `${message.content} — ${event.summary}`, isError: !event.ok }
+              : message);
+            advanceCommit(next);
+            return next;
+          });
+          break;
+        case "tool_output":
+          completedToolIdsRef.current.add(event.toolId);
+          setMessages((previous) => {
+            const next = previous.map((message) => message.toolId === event.toolId && event.content
+              ? { ...message, content: `${message.content}\n${event.content}` }
+              : message);
+            advanceCommit(next);
+            return next;
+          });
+          break;
+        case "usage":
+          if (!updateUsage) break;
+          setInputTokens(event.usage.inputTokens);
+          setOutputTokens(event.usage.outputTokens);
+          setCacheReadTokens(event.usage.cacheReadInputTokens);
+          setCacheCreationTokens(event.usage.cacheCreationInputTokens);
+          break;
+        case "notice":
+          setMessages((previous) => {
+            const next: ChatMessage[] = [...previous, { role: "system", content: `${prefix}${event.text}`, isError: event.isError }];
+            advanceCommit(next);
+            return next;
+          });
+          break;
+        case "compaction":
+          // 压缩提示与 notice 同路径渲染（上下文 spec F15）。
+          setMessages((previous) => {
+            const next: ChatMessage[] = [...previous, { role: "system", content: `${prefix}${event.text}` }];
+            advanceCommit(next);
+            return next;
+          });
+          break;
+      }
+    }
+    return { render, flush, flushedAny: () => flushedAny };
+  }
+
+  /** 一轮结束后的界面收尾：主循环与独立 Skill 轮共用。 */
+  function finishTurn(): void {
+    setIsStreaming(false);
+    setStreamingText("");
+    streamingTextRef.current = "";
+    setIteration(0);
+    abortControllerRef.current = null;
+    activityRef.current = "idle";
+    if (pendingResumeRef.current) {
+      setResumeList(pendingResumeRef.current);
+      pendingResumeRef.current = null;
     }
   }
 
@@ -432,46 +607,285 @@ export function App({
     setError(null);
   }
 
-  function handleSubmit(text: string): void {
-    if (isStreaming) return;
-    if (text === "/exit") {
-      exit();
+  async function handleResume(id: string): Promise<void> {
+    if (!clientRef.current || activityRef.current !== "idle") {
+      setError("LLM 客户端尚未就绪或历史正在更新，请稍后重试。");
       return;
     }
-    if (text === "/compact") {
-      void handleCompact();
-      return;
+    activityRef.current = "maintenance";
+    setIsMaintaining(true);
+    setResumeList(null);
+    setError(null);
+    setCompletionMark("");
+    try {
+      // 先占用目标会话再放开当前会话（F15）：抢不到说明另一实例正在续写，恢复会让两条历史交错写进同一文件。
+      const release = tryAcquire(sessionLockPath(workDir, id));
+      if (!release) {
+        addNotice("该会话正在被另一个 MewCode 使用", true);
+        return;
+      }
+      const writer = createWriter(id);
+      let outcome;
+      try {
+        outcome = await resumeSession({
+          workDir, id, conversation: conversationRef.current, writer,
+          compactor: compactorRef.current ?? undefined,
+        });
+      } catch (cause) {
+        release();
+        throw cause;
+      }
+      sessionReleaseRef.current?.();
+      sessionReleaseRef.current = release;
+      sessionWriterRef.current = writer;
+      const parts = [`已恢复会话 ${id}：${outcome.messageCount} 条消息`];
+      if (outcome.skippedLines) parts.push(`跳过 ${outcome.skippedLines} 行损坏记录`);
+      if (outcome.truncated) parts.push("未完成或不配对的工具调用已截断");
+      if (outcome.compaction === "done") parts.push("已先压缩一次");
+      if (outcome.compaction === "failed") parts.push("压缩失败，后续由自动压缩接管");
+      if (outcome.gapReminder) parts.push(`已提醒模型：${outcome.gapReminder}`);
+      setMessages((previous) => {
+        const next: ChatMessage[] = [
+          ...previous, { role: "system", content: `──── 已恢复会话 ${id} ────` },
+          ...outcome.display, { role: "system", content: parts.join("；") },
+        ];
+        advanceCommit(next);
+        return next;
+      });
+      setInputTokens(0);
+      setOutputTokens(0);
+      setCacheReadTokens(0);
+      setCacheCreationTokens(0);
+      modeTrackerRef.current.setMode(mode);
+      // 激活状态不存档：恢复后的会话从无激活 Skill 开始（Skill spec F12）。
+      skillManager.deactivate();
+    } catch (cause) {
+      setError(`恢复失败：${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      activityRef.current = "idle";
+      setIsMaintaining(false);
     }
-    if (text === "/plan") {
-      switchPermissionMode("plan");
-      return;
-    }
-    if (text === "/do") {
-      switchPermissionMode("default");
-      return;
-    }
-    if (text === "/accept-edits") {
-      switchPermissionMode("acceptEdits");
-      return;
-    }
-    if (text === "/bypass") {
-      switchPermissionMode("bypass");
-      return;
+  }
+
+  /**
+   * 发起一轮 Agent：对话区显示 display，模型收到 prompt（斜杠命令 spec F5）。
+   * 普通消息两者相同；提示词命令 display 是原命令、prompt 是展开文本。
+   */
+  function startAgentTurn(display: string, prompt: string): boolean {
+    if (!clientRef.current) {
+      setError("正在初始化 LLM 客户端，请稍后重试。");
+      return false;
     }
 
-    setPromptHistory((previous) => [...previous, text]);
     setMessages((previous) => {
-      const next: ChatMessage[] = [...previous, { role: "user", content: text }];
+      const next: ChatMessage[] = [...previous, { role: "user", content: display }];
       advanceCommit(next);
       return next;
     });
-    conversationRef.current.addUserMessage(text);
+    conversationRef.current.addUserMessage(prompt, display);
     setCompletionMark("");
     setError(null);
     setStreamingText("");
     setIsStreaming(true);
+    activityRef.current = "agent";
     abortControllerRef.current = new AbortController();
-    void runAgentLoop();
+    void runAgentLoop(prompt);
+    return true;
+  }
+
+  /**
+   * 斜杠调用 Skill（Skill spec F9、F11）：共享模式先钉住再发一条简短触发语；独立模式跑子对话。
+   * 返回 false 表示客户端未就绪，命令层据此提示并保留输入。
+   */
+  function invokeSkill(name: string, args: string, display: string): boolean {
+    const skill = skillManager.get(name);
+    if (!skill) {
+      addNotice(`未找到 Skill ${name}`, true);
+      return true;
+    }
+    if (!clientRef.current) return false;
+    if (skill.mode === "isolated") return runIsolatedTurn(skill, args, display);
+    skillManager.activate(name, args);
+    return startAgentTurn(display, args ? `执行 Skill ${name}，参数：${args}` : `执行 Skill ${name}`);
+  }
+
+  /** 独立子对话用的客户端：写了 model 时沿用当前 provider、只换模型名（Skill spec F11）。 */
+  async function isolatedClient(skill: SkillDef): Promise<LLMClient> {
+    if (!skill.model) return clientRef.current!;
+    return createClient({ ...selectedProvider, model: skill.model }, segmentsRef.current!);
+  }
+
+  /** 跑一次独立子对话并渲染事件；斜杠调用与模型调用 loadSkill 共用。 */
+  async function runIsolated(skill: SkillDef, args: string, context: Pick<ToolContext, "signal" | "permission">): Promise<IsolatedOutcome> {
+    // 快照取在追加任何新消息之前；末尾悬空的 loadSkill 调用由 recentHistory 丢掉。
+    const history = conversationRef.current.getMessages();
+    const renderer = createEventRenderer(`[${skill.name}] `, { streamText: false, updateUsage: false });
+    const generator = runIsolatedSkill({
+      skill, args, history,
+      client: await isolatedClient(skill),
+      registry: registryRef.current,
+      protocol: selectedProvider.protocol,
+      workDir,
+      mode: modeRef.current,
+      permission: context.permission,
+      signal: context.signal,
+    });
+    for (;;) {
+      const step = await generator.next();
+      if (step.done) return step.value;
+      if (step.value.type !== "done") renderer.render(step.value);
+    }
+  }
+
+  /**
+   * 独立 Skill 的斜杠调用（Skill spec F11）：结束后主历史只追加原命令与结果两条，
+   * 子对话不进主历史、不进存档，也不交给记忆整理器。
+   */
+  function runIsolatedTurn(skill: SkillDef, args: string, display: string): boolean {
+    setMessages((previous) => {
+      const next: ChatMessage[] = [...previous, { role: "user", content: display }];
+      advanceCommit(next);
+      return next;
+    });
+    setCompletionMark("");
+    setError(null);
+    setStreamingText("");
+    setIsStreaming(true);
+    activityRef.current = "agent";
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
+    void (async () => {
+      try {
+        let outcome: IsolatedOutcome;
+        try {
+          outcome = await runIsolated(skill, args, { signal, permission: buildGate() });
+        } catch (cause) {
+          outcome = { ok: false, text: `子对话执行失败：${cause instanceof Error ? cause.message : String(cause)}` };
+        }
+        const text = resultMessage(skill.name, outcome);
+        conversationRef.current.addUserMessage(display, display);
+        conversationRef.current.addAssistantMessage(text);
+        setMessages((previous) => {
+          const next: ChatMessage[] = [...previous, { role: "assistant", content: text, isError: !outcome.ok }];
+          advanceCommit(next);
+          return next;
+        });
+        if (outcome.ok) setCompletionMark(randomCompletionVerb());
+      } finally {
+        finishTurn();
+      }
+    })();
+    return true;
+  }
+
+  // 模型经 loadSkill 调用独立 Skill 时的运行器（Skill plan「独立模式：模型调用」）：
+  // 结果由 loadSkill 作为工具结果回灌，这里不追加主历史。每次渲染重新注入，闭包读到的是最新的 ref。
+  skillManager.setIsolatedRunner((skill, args, context) => runIsolated(skill, args, context));
+
+  /** 原 /compact 分支：维护期间禁用输入，结束后复位。 */
+  function compactWithMaintenance(): Promise<void> {
+    activityRef.current = "maintenance";
+    setIsMaintaining(true);
+    return handleCompact().catch((cause) => setError(String(cause))).finally(() => {
+      activityRef.current = "idle";
+      setIsMaintaining(false);
+    });
+  }
+
+  /** 原 /resume 分支：运行中先中断当前轮，收尾后再打开列表。 */
+  function openResume(): void {
+    const sessions = listSessions(workDir, sessionWriterRef.current!.id);
+    if (!sessions.length) addNotice("暂无历史会话");
+    else if (activityRef.current === "agent") {
+      pendingResumeRef.current = sessions;
+      if (confirmResolveRef.current) settleConfirm("deny");
+      abortControllerRef.current?.abort();
+    } else setResumeList(sessions);
+  }
+
+  /**
+   * /clear：清空对话区与历史、切到新会话存档（斜杠命令 spec F12）。
+   * Static 只追加不回收，必须清屏并换 key 重新挂载，横幅才会从头输出。
+   */
+  function clearConversation(): void {
+    conversationRef.current.restore([]);
+    compactorRef.current?.resetFailures();
+    compactorRef.current?.estimator.resetAnchor();
+    completedToolIdsRef.current.clear();
+    committedIndexRef.current = 0;
+    setInputTokens(0);
+    setOutputTokens(0);
+    setCacheReadTokens(0);
+    setCacheCreationTokens(0);
+    setError(null);
+    setCompletionMark("");
+    setStreamingText("");
+    const id = startNewSession();
+    modeTrackerRef.current.setMode(mode);
+    // 新会话从零开始：已激活 Skill 一并停用（Skill spec F12）。
+    skillManager.deactivate();
+    writeStdout("\x1b[2J\x1b[3J\x1b[H");
+    setStaticKey((key) => key + 1);
+    setMessages([{ role: "system", content: `已清空对话，开始新会话 ${id}（旧会话可用 /resume 找回）` }]);
+  }
+
+  // 界面控制接口（斜杠命令 spec F8）：命令实现只经它操作界面。
+  const commandUI: CommandUI = {
+    showMessage: (text, isError = false) => addNotice(text, isError),
+    sendUserMessage: (display, prompt) => startAgentTurn(display, prompt),
+    setPermissionMode: (next) => switchPermissionMode(next),
+    getUsage: () => {
+      const contextWindow = getContextWindow(selectedProvider);
+      const compactor = compactorRef.current;
+      return {
+        inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, contextWindow,
+        usedTokens: compactor ? contextWindow - compactor.remainingTokens() : null,
+      };
+    },
+    refreshStatus: () => setStatusTick((tick) => tick + 1),
+    clearConversation,
+    compact: compactWithMaintenance,
+    openResume,
+    exit: () => {
+      memoryUpdaterRef.current?.abort();
+      exit();
+    },
+    snapshot: () => {
+      const id = sessionWriterRef.current!.id;
+      const notes = (scope: NoteScope) => new MemoryStore(memoryDir(scope, workDir, homeDir)).list()
+        .map((note) => ({ name: note.name, type: note.type, description: note.description }));
+      return {
+        provider: { name: selectedProvider.name, protocol: selectedProvider.protocol, model: selectedProvider.model, baseUrl: selectedProvider.base_url },
+        permissionMode: permissionModeRef.current,
+        rules: rulesRef.current,
+        session: { id, messageCount: conversationRef.current.len(), path: join(sessionsDir(workDir), `${id}.jsonl`) },
+        memory: { user: notes("user"), project: notes("project") },
+        mcp: mcpReports,
+      };
+    },
+    listSkills: () => skillManager.list().map((skill) => ({
+      name: skill.name, description: skill.description, mode: skill.mode, source: skill.source, active: skillManager.isActive(skill.name),
+    })),
+    deactivateSkills: (name) => skillManager.deactivate(name),
+    invokeSkill,
+  };
+
+  function handleSubmit(text: string): boolean {
+    if (activityRef.current === "maintenance") return false;
+    const busy = activityRef.current === "agent";
+    const result = dispatch(text, { registry: commandRegistry, ui: commandUI, busy });
+    if (result === "rejected") return false;
+    if (result === "done") {
+      setPromptHistory((previous) => [...previous, text]);
+      return true;
+    }
+    if (busy) {
+      addNotice("Agent 运行中，仅支持 /resume 等斜杠命令；可按 Esc 中断");
+      return false;
+    }
+    if (!startAgentTurn(text, text)) return false;
+    setPromptHistory((previous) => [...previous, text]);
+    return true;
   }
 
   if (appState === "providerSelect") {
@@ -488,7 +902,7 @@ export function App({
   ];
   return (
     <>
-      <Static items={staticItems}>
+      <Static key={staticKey} items={staticItems}>
         {(item, index) => item.kind === "banner"
           ? <Banner key="banner" providerName={selectedProvider.name} model={selectedProvider.model} workDir={workDir} />
           : <CommittedMessage key={index} message={item.message} />}
@@ -503,7 +917,15 @@ export function App({
       {/* 确认框与输入框互斥：同时挂载会让两个 useInput 争抢同一批按键。 */}
       {pendingConfirm
         ? <ConfirmBox request={pendingConfirm} onChoose={settleConfirm} />
-        : <InputBox onSubmit={handleSubmit} disabled={isStreaming} history={promptHistory} />}
+        : resumeList
+          ? <SessionSelect sessions={resumeList} onSelect={(id) => { void handleResume(id); }} onCancel={() => setResumeList(null)} />
+          : <InputBox
+              onSubmit={handleSubmit}
+              disabled={isMaintaining}
+              history={promptHistory}
+              suggest={(text) => suggest(text, commandRegistry)}
+              suggestionsOpenRef={suggestionsOpenRef}
+            />}
       <StatusBar
         model={selectedProvider.model}
         mode={MODE_INFO[permissionMode].label}

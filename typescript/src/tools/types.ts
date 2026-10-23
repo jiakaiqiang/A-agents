@@ -26,7 +26,8 @@ export type ToolErrorKind =
   | "unknown_tool"
   | "unsupported"
   | "cancelled" // 批次被中断，该调用未执行
-  | "permission_denied"; // 权限判定拒绝，单列以便与越界、参数错误区分（权限 spec N4）
+  | "permission_denied" // 权限判定拒绝，单列以便与越界、参数错误区分（权限 spec N4）
+  | "not_allowed"; // 不在当前已激活 Skill 的工具白名单内（Skill spec F10）
 
 export interface ToolResult {
   ok: boolean;
@@ -41,6 +42,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** 权限判定所需的档位、规则与确认回调；缺省时需要确认的调用一律拒绝（权限 spec F1）。 */
   permission?: PermissionGate;
+  /** 当前可用工具集合；缺省表示不收窄。集合外的调用不执行（Skill spec F10）。 */
+  allowedTools?: ReadonlySet<string>;
 }
 
 export interface Tool {
@@ -49,6 +52,8 @@ export interface Tool {
   readonly parameters: JSONSchemaObject;
   /** 无副作用：可与同批工具并发执行，且计划模式下可用。 */
   readonly readOnly: boolean;
+  /** 系统级工具（如 loadSkill）：权限按读类兜底，任何档位都不询问（Skill spec F7）。 */
+  readonly system?: boolean;
   /** 工具行展示用的调用摘要，例如 Read(src/x.ts)。 */
   callSummary(args: Record<string, unknown>): string;
   execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;

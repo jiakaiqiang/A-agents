@@ -77,11 +77,15 @@ export function markLastUserTailForCache(messages: Anthropic.MessageParam[]): vo
  * 两个缓存断点：稳定段整个会话不变，环境段按天、按模型变化，各自独立成缓存单元。
  * 抽成函数是为了能在测试里直接断言块数与缓存标记，不必发真实请求。
  */
-export function buildSystemBlocks(segments: SystemPromptSegments): Anthropic.TextBlockParam[] {
-  return [
+export function buildSystemBlocks(segments: SystemPromptSegments, pinned?: string): Anthropic.TextBlockParam[] {
+  const blocks: Anthropic.TextBlockParam[] = [
     { type: "text", text: segments.stable, cache_control: { type: "ephemeral" } },
     { type: "text", text: segments.environment, cache_control: { type: "ephemeral" } },
   ];
+  // 已激活 Skill 的钉住段排在两个缓存单元之后、历史之前（Skill spec F8、N2）。
+  // 不打缓存标记：断点数不变，激活变化只影响它之后的前缀，稳定段与环境段的缓存照常命中。
+  if (pinned?.trim()) blocks.push({ type: "text", text: pinned });
+  return blocks;
 }
 
 export async function fetchModelContextWindow(config: ProviderConfig): Promise<number> {
@@ -160,7 +164,7 @@ export class AnthropicClient {
         model: this.config.model,
         max_tokens: this.maxOutputTokens,
         stream: true,
-        system: buildSystemBlocks(this.segments),
+        system: buildSystemBlocks(this.segments, options.pinned),
         messages,
         ...(tools.length ? { tools: tools as unknown as Anthropic.Tool[] } : {}),
       };

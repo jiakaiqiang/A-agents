@@ -43,6 +43,13 @@ describe("spillToFile", () => {
     const path = spillToFile("Bash", "hello", filePath);
     expect(path).toBeNull();
   });
+
+  test("工具名中的路径和 Windows 非法字符不会进入文件名", () => {
+    const path = spillToFile("mcp/foo:bar\\baz?", "hello", workDir);
+    expect(path).not.toBeNull();
+    expect(path!).toMatch(/mcp-foo-bar-baz--\d{8}-\d{6}-[a-z0-9]+\.txt$/);
+    expect(readFileSync(path!, "utf8")).toBe("hello");
+  });
 });
 
 describe("buildPreview", () => {

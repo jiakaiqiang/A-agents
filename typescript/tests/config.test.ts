@@ -37,6 +37,11 @@ describe("配置加载", () => {
     expect(config.providers[0]?.model).toBe("claude-opus-5");
   });
 
+  test("加载上下文管理阈值", () => {
+    const config = loadConfig(writeConfig(`providers:\n  - name: Test\n    protocol: openai\n    base_url: https://example.com\n    model: demo\ncontext_management:\n  auto_margin_tokens: 9000\n  tool_spill_tokens: 1200\n`));
+    expect(config.context_management).toEqual({ auto_margin_tokens: 9000, tool_spill_tokens: 1200 });
+  });
+
   test("缺少字段时报错", () => {
     expect(() => loadConfig(writeConfig(`providers:\n  - name: Test\n    protocol: anthropic\n    base_url: https://api.anthropic.com\n`))).toThrow(ConfigError);
   });

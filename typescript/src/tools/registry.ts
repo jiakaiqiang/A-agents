@@ -6,6 +6,8 @@ export type ToolDefinition = Record<string, unknown>;
 export interface DefinitionOptions {
   /** 只导出无副作用的工具，用于计划模式。 */
   readOnlyOnly?: boolean;
+  /** 只导出集合内的工具：已激活 Skill 的白名单（Skill spec F10）。 */
+  only?: ReadonlySet<string>;
 }
 
 /**
@@ -89,7 +91,9 @@ export class ToolRegistry {
   }
 
   definitionsFor(protocol: ProviderProtocol, options?: DefinitionOptions): ToolDefinition[] {
-    const source = options?.readOnlyOnly ? this.listReadOnly() : this.list();
+    const base = options?.readOnlyOnly ? this.listReadOnly() : this.list();
+    const only = options?.only;
+    const source = only ? base.filter((tool) => only.has(tool.name)) : base;
     return source.map((tool) => {
       if (protocol === "anthropic") {
         return {

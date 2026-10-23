@@ -17,3 +17,9 @@ __pycache__/
 
 # 工具结果存盘目录（上下文管理第一层预防）
 **/.mewcode/tool-outputs/
+
+# 会话存档（记忆系统 F4）：含完整工具输出，不入版本库
+**/.mewcode/sessions/
+
+# 跨进程锁文件（记忆系统 F17）：只对本机运行中的进程有意义
+**/.mewcode/locks/

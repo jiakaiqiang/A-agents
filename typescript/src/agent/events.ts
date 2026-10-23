@@ -23,6 +23,7 @@ export type AgentEvent =
   | { type: "thinking"; text: string }
   | { type: "tool_start"; toolId: string; name: string; argSummary: string }
   | { type: "tool_end"; toolId: string; ok: boolean; summary: string }
+  | { type: "tool_output"; toolId: string; content: string }
   | { type: "usage"; usage: UsageInfo } // 本轮累计值，由 loop 累加后发出
   | { type: "progress"; iteration: number; phase: LoopPhase; toolsExecuted: number }
   | { type: "notice"; text: string; isError: boolean }
