@@ -1,0 +1,651 @@
+<title>MewCode 调用链</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --bg: #F6F7F9;
+    --surface: #FFFFFF;
+    --ink: #1B2230;
+    --muted: #5B6577;
+    --line: #DCE1E8;
+    --accent: #2F5BD3;
+    --accent-soft: #E7EDFC;
+    --tool: #B86A0E;
+    --tool-soft: #FBF1E3;
+    --code-bg: #EEF1F5;
+    --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #12151B; --surface: #1A1F28; --ink: #E4E8EF; --muted: #98A2B3;
+      --line: #2C3340; --accent: #7EA2FF; --accent-soft: #1E2A47;
+      --tool: #F0A54A; --tool-soft: #33261A; --code-bg: #222834;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #12151B; --surface: #1A1F28; --ink: #E4E8EF; --muted: #98A2B3;
+    --line: #2C3340; --accent: #7EA2FF; --accent-soft: #1E2A47;
+    --tool: #F0A54A; --tool-soft: #33261A; --code-bg: #222834;
+  }
+  body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.7; padding: 0 16px; }
+  main { max-width: 980px; margin: 0 auto; padding-block: 40px 72px; display: flex; flex-direction: column; gap: 44px; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.3; margin: 0; }
+  h1 { font-size: 30px; font-weight: 700; }
+  h2 { font-size: 21px; font-weight: 700; }
+  h3 { font-size: 16px; font-weight: 700; }
+  p { margin: 0; max-width: 68ch; }
+  section { display: flex; flex-direction: column; gap: 14px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  .lede { color: var(--muted); font-size: 16px; }
+  code, .mono { font-family: var(--mono); font-size: .88em; }
+  p code, li code, td code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  .diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; overflow-x: auto; }
+  .diagram pre.mermaid { margin: 0; min-width: 640px; width: max-content; }
+  .note { font-size: 13px; color: var(--muted); }
+  .stages { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+  .stage { display: grid; grid-template-columns: 9.5rem 1fr; gap: 6px 20px; padding-block: 16px; border-bottom: 1px solid var(--line); }
+  .stage .where { font-family: var(--mono); font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+  .stage .where b { color: var(--ink); font-weight: 600; font-size: 13px; }
+  .stage.tool .where b { color: var(--tool); }
+  .stage .body { display: flex; flex-direction: column; gap: 6px; }
+  .stage ul { margin: 0; padding-left: 1.2em; max-width: 72ch; }
+  .stage li + li { margin-top: 2px; }
+  .history { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
+  .history table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 13.5px; }
+  .history th, .history td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .history tr:last-child td { border-bottom: 0; }
+  .history th { font-size: 12px; letter-spacing: .06em; color: var(--muted); font-weight: 500; }
+  .history td:first-child { font-family: var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; width: 2.5rem; }
+  .role { font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+  .role.u { background: var(--accent-soft); color: var(--accent); }
+  .role.a { background: var(--code-bg); color: var(--ink); }
+  .role.r { background: var(--tool-soft); color: var(--tool); }
+  .points { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 28px; }
+  .points div { display: flex; flex-direction: column; gap: 4px; }
+  .points p { font-size: 14px; color: var(--muted); }
+  /* 可点击：图节点、时序消息、源码引用按钮 */
+  .hint { font-size: 13px; color: var(--accent); }
+  .diagram svg .node, .diagram svg .messageText { cursor: pointer; }
+  .diagram svg .node:hover > *, .diagram svg .node:focus > * { filter: brightness(1.08); }
+  .diagram svg .node:focus { outline: none; }
+  .diagram svg .node.is-active rect, .diagram svg .node.is-active polygon, .diagram svg .node.is-active path, .diagram svg .node.is-active circle {
+    stroke: var(--tool) !important; stroke-width: 3px !important;
+  }
+  .diagram svg .messageText:hover, .diagram svg .messageText.is-active { fill: var(--tool) !important; font-weight: 700; }
+  button.ref { all: unset; cursor: pointer; font-family: var(--mono); font-size: 12px; color: var(--accent); border-bottom: 1px dashed currentColor; margin-left: 4px; }
+  .stage.tool button.ref { color: var(--tool); }
+  button.ref:hover, button.ref:focus-visible { background: var(--accent-soft); }
+  td button.ref { margin-left: 0; font-size: 12.5px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* 详情抽屉 */
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(620px, 100%); background: var(--surface); border-left: 1px solid var(--line);
+    box-shadow: -12px 0 32px rgba(10, 20, 40, .14); display: flex; flex-direction: column; z-index: 10;
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+    transform: translateX(100%); transition: transform .22s ease; visibility: hidden; }
+  .drawer.open { transform: none; visibility: visible; }
+  .drawer header { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+  .drawer header > div { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .drawer h3 { font-size: 18px; }
+  .drawer .close { all: unset; cursor: pointer; font-size: 22px; line-height: 1; padding: 4px 8px; border-radius: 6px; color: var(--muted); }
+  .drawer .close:hover, .drawer .close:focus-visible { background: var(--code-bg); color: var(--ink); }
+  .drawer .scroll { overflow-y: auto; padding: 16px 20px 28px; display: flex; flex-direction: column; gap: 18px; }
+  .drawer .desc { font-size: 14.5px; }
+  .snippet { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .snippet .bar { display: flex; align-items: center; gap: 10px; padding: 7px 12px; background: var(--code-bg); font-family: var(--mono); font-size: 12px; }
+  .snippet .bar span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .snippet .bar button { all: unset; cursor: pointer; color: var(--accent); font-size: 12px; }
+  .snippet .bar button:focus-visible { outline: 2px solid var(--accent); }
+  .snippet pre { margin: 0; padding: 10px 0; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--surface); }
+  .snippet .ln { display: block; padding: 0 14px 0 0; white-space: pre; }
+  .snippet .ln i { display: inline-block; width: 3.4em; padding-right: 12px; text-align: right; color: var(--muted); font-style: normal; user-select: none; opacity: .7; }
+  .snippet .missing { padding: 10px 14px; color: var(--muted); font-size: 13px; }
+  @media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
+
+  @media (max-width: 640px) {
+    h1 { font-size: 25px; }
+    .stage { grid-template-columns: 1fr; }
+    .points { grid-template-columns: 1fr; }
+  }
+</style>
+
+<main>
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <div class="eyebrow">typescript/src · agent loop</div>
+    <h1>MewCode 调用链：从一句输入到工具执行</h1>
+    <p class="lede">用户在输入框回车后，消息进入 <code>ConversationManager</code>，由 <code>runLoop</code> 驱动「调模型 → 执行工具 → 结果回灌」的 ReAct 循环，直到模型不再请求工具。全链路只靠 <code>AgentEvent</code> 事件流把进度送回 Ink 界面。</p>
+  </header>
+
+  <section>
+    <div class="eyebrow">图 1 · 总览</div>
+    <h2>启动、提交与 ReAct 主循环</h2>
+    <p class="hint">点击任一节点，右侧打开对应源码。</p>
+    <div class="diagram" data-fig="overview"><pre class="mermaid">
+%%{init: {"flowchart": {"useMaxWidth": false}}}%%
+flowchart TD
+  subgraph S0["启动 main.tsx"]
+    A1["loadConfig 读取 provider 配置"] --> A2["createDefaultRegistry 注册内置工具 + toolSearch"]
+    A2 --> A3["McpManager.connectAll 接入 MCP 工具"]
+    A3 --> A4["render App"]
+  end
+  subgraph S1["会话准备 app.tsx useEffect"]
+    B1["buildSystemPrompt 稳定段 + 环境段"] --> B2["createClient 按 protocol 选适配器"]
+    B2 --> B3["new Compactor 绑定 client 与会话"]
+  end
+  A4 --> B1
+  U(["用户在 InputBox 回车"]) --> C1{"handleSubmit 是斜杠命令?"}
+  C1 -- "是" --> C2["切档 / compact / exit，不调模型"]
+  C1 -- "否" --> C3["conversation.addUserMessage"]
+  C3 --> C4["runAgentLoop 组装 LoopOptions"]
+  B3 -.-> C4
+  subgraph LOOP["runLoop ReAct 循环 agent/loop.ts"]
+    D1["compactor.maintain 超阈值先压缩历史"] --> D2["definitionsFor 生成工具定义 + 懒加载目录"]
+    D2 --> D3["collectStream 调模型并收集流"]
+    D3 --> D4{"toolUses 为空?"}
+    D4 -- "是" --> D5["addAssistantMessage 本轮完成"]
+    D4 -- "否" --> D6["addAssistantFull 记录 text + tool_use"]
+    D6 --> D7["planBatches + runBatches 执行工具"]
+    D7 --> D8["applyLightPrevention 大结果存盘"]
+    D8 --> D9["addToolResultMessage 结果回灌历史"]
+    D9 --> D10{"中断 / 连续 3 轮未知工具 / 满 25 轮?"}
+    D10 -- "否，下一轮" --> D1
+    D10 -- "是" --> D11["finish 补收尾助手消息"]
+  end
+  C4 --> D1
+  D5 --> E1["yield done 事件"]
+  D11 --> E1
+  E1 --> E2["Ink 界面定稿，等待下一次输入"]
+</pre></div>
+    <p class="note">虚线表示依赖注入：client 与 compactor 在会话准备阶段建好，每次提交时通过 <code>LoopOptions</code> 传进循环。</p>
+  </section>
+  <section>
+    <div class="eyebrow">图 2 · 模型请求</div>
+    <h2>历史怎样变成请求，流怎样变成工具调用</h2>
+    <p class="hint">点击任一节点，右侧打开对应源码。</p>
+    <div class="diagram" data-fig="request"><pre class="mermaid">
+%%{init: {"flowchart": {"useMaxWidth": false}}}%%
+flowchart TD
+  H["ConversationManager.getMessages 内部 Message 数组"] --> M1["buildAnthropicMessages 映射为协议消息"]
+  R["ModeTracker.nextTurn + lazyCatalogReminder"] --> M2["appendReminders 挂到末条 user，不进历史"]
+  M1 --> M2
+  M2 --> M3["markLastUserTailForCache + buildSystemBlocks 两个缓存断点"]
+  T["registry.definitionsFor 工具 JSON Schema"] --> M4
+  M3 --> M4["messages.stream 发起 SSE 请求"]
+  M4 --> S1["content_block_delta text_delta"]
+  M4 --> S2["content_block_start tool_use + input_json_delta 拼参数"]
+  M4 --> S3["message_delta stop_reason + usage"]
+  S1 --> N1["StreamEvent text_delta"]
+  S2 --> N2["content_block_stop 时 JSON.parse，产出 tool_call_complete"]
+  S3 --> N3["StreamEvent stream_end"]
+  N1 --> CS["collectStream 双路收集"]
+  N2 --> CS
+  N3 --> CS
+  CS -- "yield text 事件" --> UI["界面实时渲染"]
+  CS -- "return CollectedResponse" --> LP["runLoop 判断下一步"]
+</pre></div>
+    <p class="note">OpenAI 与 OpenAI 兼容协议走 <code>llm/openai.ts</code>，各自把 SSE 归一成同一套 <code>StreamEvent</code>，循环层不感知协议差异。</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">图 3 · 工具执行</div>
+    <h2>从 tool_use 到 tool_result</h2>
+    <p class="hint">点击任一节点，右侧打开对应源码。</p>
+    <div class="diagram" data-fig="tools"><pre class="mermaid">
+%%{init: {"flowchart": {"useMaxWidth": false}}}%%
+flowchart TD
+  P0["response.toolUses 按模型给出的顺序"] --> P1["planBatches 保序分段"]
+  P1 --> P2["相邻只读调用合并为并发批，最多 8 个一组 Promise.all"]
+  P1 --> P3["写文件、Bash、未知工具各自单独成串行批"]
+  P2 --> RO["runOne"]
+  P3 --> RO
+  RO --> Q0{"参数 JSON 解析失败?"}
+  Q0 -- "是" --> F1["fail invalid_params"]
+  Q0 -- "否" --> Q1["runTool 唯一入口 tools/execute.ts"]
+  Q1 --> Q2{"registry.get 命中?"}
+  Q2 -- "否，懒池有" --> Q3["registry.discover 自动补载"]
+  Q2 -- "否，懒池也没有" --> F2["fail unknown_tool"]
+  Q3 --> Q4
+  Q2 -- "是" --> Q4["validate 按 JSON Schema 校验"]
+  Q4 -- "不通过" --> F1
+  Q4 -- "通过" --> K1
+  subgraph DEC["decide 五层权限判定 permission/decide.ts"]
+    K1["① 黑名单 危险命令"] --> K2["② 路径沙箱 工作目录"]
+    K2 --> K3["③ 规则 session / local / 配置"]
+    K3 -- "未命中" --> K4["④ 档位兜底 MODE_FALLBACK"]
+    K4 -- "ask" --> K5["⑤ ConfirmBox 等用户按键"]
+  end
+  K1 -. "任一层 deny" .-> F3["fail permission_denied"]
+  K3 -- "allow" --> X1
+  K4 -- "allow" --> X1
+  K5 -- "允许 / 本会话 / 永久" --> X1["tool.execute"]
+  X1 --> X2["截断到 30000 字符 + redact 脱敏"]
+  X2 --> OUT["ToolResultBlock toolUseId 与 tool_use 一一配对"]
+  F1 --> OUT
+  F2 --> OUT
+  F3 --> OUT
+</pre></div>
+    <p class="note">失败也是结果：每个 <code>tool_use</code> 都必然得到一条 <code>tool_result</code>，被中断的调用回灌 <code>cancelled</code>，保证下一次请求协议合法。</p>
+  </section>
+  <section>
+    <div class="eyebrow">图 4 · 一次真实的请求</div>
+    <h2>例子：「把 README 里的版本号改成 0.3.0」</h2>
+    <p>默认档下，Read 是只读工具自动放行，Edit 属于写类需要确认。整轮共调用模型 3 次。</p>
+    <p class="hint">点击任一条消息，查看这一步执行的源码。</p>
+    <div class="diagram" data-fig="sequence"><pre class="mermaid">
+%%{init: {"sequence": {"useMaxWidth": false}}}%%
+sequenceDiagram
+  autonumber
+  actor User as 用户
+  participant App as App 界面
+  participant RL as runLoop
+  participant Conv as Conversation
+  participant LLM as LLM Client
+  participant Tool as runTool + decide
+  User->>App: 回车提交
+  App->>Conv: addUserMessage
+  App->>RL: runLoop for-await 消费事件
+  RL->>LLM: 第 1 次请求 历史 + 工具定义
+  LLM-->>RL: text 我先读一下 + tool_use Read
+  RL->>Conv: addAssistantFull text + tool_use
+  RL->>Tool: Read README.md
+  Note over Tool: 只读类，档位兜底 allow
+  Tool-->>RL: 文件内容
+  RL->>Conv: addToolResultMessage
+  RL->>LLM: 第 2 次请求 历史已含读取结果
+  LLM-->>RL: tool_use Edit
+  RL->>Conv: addAssistantFull
+  RL->>Tool: Edit README.md
+  Tool->>App: confirm 弹出 ConfirmBox
+  User->>App: 选择允许
+  App-->>Tool: allow
+  Tool-->>RL: 编辑成功
+  RL->>Conv: addToolResultMessage
+  RL->>LLM: 第 3 次请求
+  LLM-->>RL: 已改为 0.3.0，toolUses 为空
+  RL->>Conv: addAssistantMessage
+  RL-->>App: done reason complete
+  App-->>User: 显示完成标记
+</pre></div>
+  </section>
+
+  <section>
+    <div class="eyebrow">会话历史</div>
+    <h2>这一轮结束后 history 里的 6 条消息</h2>
+    <p>工具结果在协议层映射为 <code>user</code> 消息，所以历史始终是 user / assistant 交替。模式补充指令只挂在请求上，不写进这里。</p>
+    <div class="history">
+      <table>
+        <thead><tr><th>#</th><th>ROLE</th><th>内容</th><th>写入位置</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><span class="role u">user</span></td><td>把 README 里的版本号改成 0.3.0</td><td><button type="button" class="ref" data-refs="typescript/src/tui/app.tsx:483-495,typescript/src/conversation/conversation.ts:30-32" data-title="#1 写入用户消息">app.tsx:489</button></td></tr>
+          <tr><td>2</td><td><span class="role a">assistant</span></td><td>text「我先读一下」+ toolUses <code>[Read]</code></td><td><button type="button" class="ref" data-refs="typescript/src/agent/loop.ts:147-149,typescript/src/conversation/conversation.ts:38-40" data-title="写入助手消息（含 tool_use）">loop.ts:149</button></td></tr>
+          <tr><td>3</td><td><span class="role r">user · toolResults</span></td><td><code>toolUseId</code> 对应 #2 的 Read，content 为文件内容</td><td><button type="button" class="ref" data-refs="typescript/src/agent/loop.ts:167-170,typescript/src/conversation/conversation.ts:50-52" data-title="写入工具结果（user · toolResults）">loop.ts:170</button></td></tr>
+          <tr><td>4</td><td><span class="role a">assistant</span></td><td>toolUses <code>[Edit]</code></td><td><button type="button" class="ref" data-refs="typescript/src/agent/loop.ts:147-149,typescript/src/conversation/conversation.ts:38-40" data-title="写入助手消息（含 tool_use）">loop.ts:149</button></td></tr>
+          <tr><td>5</td><td><span class="role r">user · toolResults</span></td><td>Edit 的执行结果</td><td><button type="button" class="ref" data-refs="typescript/src/agent/loop.ts:167-170,typescript/src/conversation/conversation.ts:50-52" data-title="写入工具结果（user · toolResults）">loop.ts:170</button></td></tr>
+          <tr><td>6</td><td><span class="role a">assistant</span></td><td>已将版本号改为 0.3.0</td><td><button type="button" class="ref" data-refs="typescript/src/agent/loop.ts:140-145,typescript/src/conversation/conversation.ts:34-36" data-title="#6 写入最终回复">loop.ts:142</button></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section>
+    <div class="eyebrow">逐段对照源码</div>
+    <h2>每一段在哪个文件</h2>
+    <div class="stages">
+      <div class="stage">
+        <div class="where"><b>启动装配</b>main.tsx</div>
+        <div class="body"><ul>
+          <li><code>loadConfig</code> 读 provider；<code>createDefaultRegistry</code> 注册 Read / Write / Edit / Bash / Glob / Grep 和 toolSearch。<button type="button" class="ref" data-refs="typescript/src/main.tsx:31-39,typescript/src/tools/index.ts:21-34" data-title="读配置与注册内置工具">main.tsx:33 · tools/index.ts:25</button></li>
+          <li><code>McpManager.connectAll</code> 阻塞连接 MCP，把远端工具注册进同一个 registry，失败按 Server 降级。<button type="button" class="ref" data-refs="typescript/src/main.tsx:51-66,typescript/src/mcp/manager.ts:19-58" data-title="接入 MCP 工具">main.tsx:58</button></li>
+        </ul></div>
+      </div>
+      <div class="stage">
+        <div class="where"><b>会话准备</b>tui/app.tsx</div>
+        <div class="body"><ul>
+          <li>选定 provider 后构建系统提示词（稳定段 + 环境段），<code>createClient</code> 按 protocol 动态加载 Anthropic 或 OpenAI 适配器，同时创建 <code>Compactor</code>。<button type="button" class="ref" data-refs="typescript/src/tui/app.tsx:233-266,typescript/src/llm/client.ts:24-47" data-title="会话准备：提示词与 client">app.tsx:233-266 · llm/client.ts:24</button></li>
+        </ul></div>
+      </div>
+      <div class="stage">
+        <div class="where"><b>提交输入</b>tui/app.tsx</div>
+        <div class="body"><ul>
+          <li><code>handleSubmit</code> 先拦斜杠命令（/plan /do /compact 等，不发请求），普通文本写入历史后建 <code>AbortController</code>，调 <code>runAgentLoop</code>。<button type="button" class="ref" data-refs="typescript/src/tui/app.tsx:456-496" data-title="handleSubmit 提交输入">app.tsx:456-496</button></li>
+          <li><code>runAgentLoop</code> 组装 <code>LoopOptions</code>：client、conversation、registry、权限 Gate、compactor、signal、本轮 reminders。<button type="button" class="ref" data-refs="typescript/src/tui/app.tsx:309-347" data-title="runAgentLoop 组装 LoopOptions">app.tsx:335-347</button></li>
+        </ul></div>
+      </div>
+      <div class="stage">
+        <div class="where"><b>主循环</b>agent/loop.ts</div>
+        <div class="body"><ul>
+          <li>每次迭代：<code>maintain</code> 兜底压缩 → 生成工具定义和懒加载目录 → <code>collectStream</code>。<button type="button" class="ref" data-refs="typescript/src/agent/loop.ts:107-139" data-title="每次迭代的请求准备">loop.ts:112-134</button></li>
+          <li><code>toolUses</code> 为空即自然完成；否则先写助手消息，再执行工具、回灌结果，进入下一次迭代。<button type="button" class="ref" data-refs="typescript/src/agent/loop.ts:140-178" data-title="分支：完成或执行工具">loop.ts:141-178</button></li>
+          <li>停止条件：25 轮上限、连续 3 轮全是未知工具、用户 Esc、请求异常。非自然停止时补一条收尾助手消息。<button type="button" class="ref" data-refs="typescript/src/agent/loop.ts:89-105,typescript/src/agent/loop.ts:179-192,typescript/src/tools/limits.ts:19-25" data-title="停止条件与收尾">loop.ts:89-105 · tools/limits.ts</button></li>
+        </ul></div>
+      </div>
+      <div class="stage">
+        <div class="where"><b>模型请求</b>llm/anthropic.ts</div>
+        <div class="body"><ul>
+          <li><code>buildAnthropicMessages</code> 把内部 Message 映射成协议格式：assistant 带 thinking / text / tool_use 块，toolResults 变成 tool_result 块。<button type="button" class="ref" data-refs="typescript/src/llm/anthropic.ts:10-48" data-title="历史映射为协议消息">anthropic.ts:10-48</button></li>
+          <li>流式解析：<code>input_json_delta</code> 按 block index 累积参数，<code>content_block_stop</code> 时统一 <code>JSON.parse</code>，失败记 parseError。<button type="button" class="ref" data-refs="typescript/src/llm/anthropic.ts:173-235" data-title="流式解析 SSE">anthropic.ts:173-230</button></li>
+        </ul></div>
+      </div>
+      <div class="stage">
+        <div class="where"><b>收集响应</b>agent/collect.ts</div>
+        <div class="body"><ul>
+          <li>一次消费流同时做两件事：<code>yield</code> 文本增量给界面，<code>return</code> 完整的 text、thinkingBlocks、toolUses、usage 给循环。Esc 中断转成 <code>aborted: true</code>。<button type="button" class="ref" data-refs="typescript/src/agent/collect.ts:20-80" data-title="collectStream 双路收集">collect.ts:24-80</button></li>
+        </ul></div>
+      </div>
+      <div class="stage tool">
+        <div class="where"><b>批次调度</b>agent/batch.ts</div>
+        <div class="body"><ul>
+          <li><code>planBatches</code> 保序扫描，相邻只读调用并成并发批，有副作用的单独串行；<code>runBatches</code> 按原始顺序回写结果。<button type="button" class="ref" data-refs="typescript/src/agent/batch.ts:21-38,typescript/src/agent/batch.ts:73-136" data-title="批次调度">batch.ts:25-136</button></li>
+        </ul></div>
+      </div>
+      <div class="stage tool">
+        <div class="where"><b>单次执行</b>tools/execute.ts</div>
+        <div class="body"><ul>
+          <li><code>runTool</code> 依次做：查找（懒池补载）→ Schema 校验 → <code>decide</code> → <code>execute</code> → 截断与脱敏。<button type="button" class="ref" data-refs="typescript/src/tools/execute.ts:23-79" data-title="runTool 单次执行">execute.ts:24-79</button></li>
+        </ul></div>
+      </div>
+      <div class="stage tool">
+        <div class="where"><b>权限判定</b>permission/decide.ts</div>
+        <div class="body"><ul>
+          <li>黑名单与沙箱只会拒绝；规则层可放行或拒绝；档位兜底表决定 allow 或 ask；ask 时通过 Promise 挂起等 ConfirmBox，选「本会话 / 永久」会写入规则。<button type="button" class="ref" data-refs="typescript/src/permission/decide.ts:11-78,typescript/src/permission/limits.ts:58-75" data-title="五层权限判定">decide.ts:15-78 · permission/limits.ts</button></li>
+        </ul></div>
+      </div>
+      <div class="stage">
+        <div class="where"><b>回到界面</b>tui/app.tsx</div>
+        <div class="body"><ul>
+          <li><code>for await</code> 消费 AgentEvent：text 进流式区，tool_start / tool_end 原地画工具行，usage 刷新状态栏，done 定稿并显示完成标记。<button type="button" class="ref" data-refs="typescript/src/tui/app.tsx:348-424" data-title="界面消费事件流">app.tsx:348-424</button></li>
+        </ul></div>
+      </div>
+    </div>
+  </section>
+  <section>
+    <div class="eyebrow">设计要点</div>
+    <h2>串起这条链的几个约定</h2>
+    <div class="points">
+      <div><h3>事件流是唯一出口</h3><p>runLoop、collectStream、runBatches 都是 async generator，只 yield <code>AgentEvent</code>，不 import 任何界面模块，循环可以脱离 Ink 单测。</p></div>
+      <div><h3>tool_use 与 tool_result 严格配对</h3><p>参数解析失败、未知工具、权限拒绝、中断都会生成一条错误结果，结果数组与调用数组长度始终相等。</p></div>
+      <div><h3>补充指令不进历史</h3><p>计划模式指令和懒加载目录每次请求临时挂到末条 user 消息，切模式不污染历史，也不破坏系统提示词的缓存前缀。</p></div>
+      <div><h3>权限在执行之前</h3><p><code>decide</code> 拿的是 Schema 归一化后的参数，拒绝时工具不会产生任何副作用；Esc 时挂起的确认会按拒绝兑付，循环能正常收尾。</p></div>
+    </div>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" role="dialog" aria-modal="false" aria-labelledby="drawer-title" aria-hidden="true">
+  <header>
+    <div>
+      <div class="eyebrow" id="drawer-fig"></div>
+      <h3 id="drawer-title"></h3>
+    </div>
+    <button type="button" class="close" id="drawer-close" aria-label="关闭详情">×</button>
+  </header>
+  <div class="scroll">
+    <p class="desc" id="drawer-desc"></p>
+    <div id="drawer-snippets" style="display:flex;flex-direction:column;gap:14px"></div>
+  </div>
+</aside>
+
+<!-- 节点 → 说明 + 源码区间（路径相对 typescript/src）。源码正文由生成脚本写入 source-data。 -->
+<script type="application/json" id="node-data">
+{
+"overview": {
+  "A1": { "t": "loadConfig 读取配置", "d": "启动第一步读取 provider、hooks、MCP Server、上下文管理等配置；失败直接打印错误退出，不进入界面。", "r": ["main.tsx:31-39"] },
+  "A2": { "t": "createDefaultRegistry 注册工具", "d": "注册 Read、Write、Edit、Bash、Glob、Grep 六个内置工具，再挂上 toolSearch 元工具。重名注册会直接抛错。", "r": ["tools/index.ts:21-34", "tools/registry.ts:21-34"] },
+  "A3": { "t": "McpManager.connectAll 接入 MCP", "d": "并行连接全部启用的 MCP Server，握手后列出工具，全部登记进懒加载池，被发现时才生成完整 Tool。单个 Server 失败只降级它自己，不阻塞启动。", "r": ["main.tsx:51-66", "mcp/manager.ts:19-58"] },
+  "A4": { "t": "render App", "d": "把 providers、registry、MCP 连接报告、上下文管理配置交给 Ink 的 App 组件，进入 TUI。", "r": ["main.tsx:68-73"] },
+  "B1": { "t": "buildSystemPrompt 系统提示词", "d": "拆成稳定段（身份、安全、工具用法等）和环境段（目录、日期、模型），各自独立打缓存断点。工具清单始终列全量，切模式不会改动稳定段字节。", "r": ["tui/app.tsx:233-244", "prompt/builder.ts:73-105"] },
+  "B2": { "t": "createClient 选择适配器", "d": "按 provider.protocol 动态加载 Anthropic、OpenAI 或 OpenAI 兼容适配器，统一包装成 LLMClient.stream 接口。", "r": ["llm/client.ts:24-47"] },
+  "B3": { "t": "new Compactor", "d": "Compactor 要跨轮持有熔断计数与估算锚点，所以和 client 一起建好，存进 ref。", "r": ["tui/app.tsx:245-263"] },
+  "U": { "t": "InputBox 回车提交", "d": "回车（不带 Shift / Ctrl）把多行内容拼起来提交，Shift+Enter 只换行。", "r": ["tui/input.tsx:45-53"] },
+  "C1": { "t": "handleSubmit 拦截斜杠命令", "d": "流式进行中直接忽略输入。/exit、/compact、/plan、/do、/accept-edits、/bypass 在这里处理，不写历史、不发请求。", "r": ["tui/app.tsx:456-481"] },
+  "C2": { "t": "switchPermissionMode 切档", "d": "斜杠命令与 Shift+Tab 的唯一入口：同时设定权限档位与提示词模式，并让 ModeTracker 计数归零。", "r": ["tui/app.tsx:438-454"] },
+  "C3": { "t": "addUserMessage 写入历史", "d": "普通文本先进 ConversationManager 的 history，再建 AbortController（Esc 中断用），然后启动 runAgentLoop。", "r": ["tui/app.tsx:483-495", "conversation/conversation.ts:30-32"] },
+  "C4": { "t": "runAgentLoop 组装 LoopOptions", "d": "把 client、conversation、registry、权限 Gate、compactor、signal、本轮 reminders 交给 runLoop，用 for await 消费事件。Gate 每轮重建，档位和规则从 ref 读，保证读到最新值。", "r": ["tui/app.tsx:309-347"] },
+  "D1": { "t": "compactor.maintain 兜底压缩", "d": "每次请求前估算历史 token，超过「窗口 − 13K 余量」就先摘要压缩。连续失败 3 次后熔断，只提示一次，改由 /compact 手动重试。", "r": ["agent/loop.ts:107-119", "context/compactor.ts:191-200"] },
+  "D2": { "t": "definitionsFor 生成工具定义", "d": "每次迭代把全部已注册工具转成当前协议的定义格式。懒加载池中未发现的 MCP 工具只以目录 reminder 的形式出现。", "r": ["agent/loop.ts:121-132", "tools/registry.ts:91-118"] },
+  "D3": { "t": "collectStream 调模型", "d": "消费 client.stream：文本增量实时 yield 给界面，同时累积出完整的 text、thinkingBlocks、toolUses、usage 返回给循环。", "r": ["agent/loop.ts:133-139", "agent/collect.ts:20-80"] },
+  "D4": { "t": "toolUses 为空?", "d": "模型这次没有请求工具，说明它给出了最终回复，本轮自然完成。", "r": ["agent/loop.ts:140-145"] },
+  "D5": { "t": "addAssistantMessage 本轮完成", "d": "把最终文本作为普通助手消息写入历史，以 complete 结束（如果流被中断则以 cancelled 结束）。", "r": ["agent/loop.ts:140-145", "conversation/conversation.ts:34-36"] },
+  "D6": { "t": "addAssistantFull 记录 tool_use", "d": "文本、thinking 块、tool_use 合成一条助手消息写入历史，parseError 只用于本轮判断，不进历史。流此时若已中断，全部调用回灌 cancelled。", "r": ["agent/loop.ts:147-159", "conversation/conversation.ts:38-40"] },
+  "D7": { "t": "planBatches + runBatches", "d": "先按只读 / 副作用分批，再按批次顺序执行。返回的结果数组与 toolUses 等长同序。详见图 3。", "r": ["agent/loop.ts:161-166", "agent/batch.ts:21-38"] },
+  "D8": { "t": "applyLightPrevention 大结果存盘", "d": "结果写入历史前：单条超阈值就存到 .mewcode/tool-outputs，历史里只留预览；合计仍超阈值则从最大的一条开始依次存盘。", "r": ["agent/loop.ts:167-169", "context/compactor.ts:141-185"] },
+  "D9": { "t": "addToolResultMessage 结果回灌", "d": "工具结果作为一条带 toolResults 的 user 消息写入历史，下一次请求时映射为 tool_result 块。", "r": ["agent/loop.ts:170-178", "conversation/conversation.ts:50-52"] },
+  "D10": { "t": "停止条件检查", "d": "全部调用都指向未知工具才计一次无效迭代，连续 3 次中止；Esc 中断随时检查；while 条件保证最多 25 次请求。", "r": ["agent/loop.ts:180-188", "tools/limits.ts:19-25"] },
+  "D11": { "t": "finish 补收尾助手消息", "d": "非自然停止且末次写入是工具结果时，补一条收尾助手消息，避免下一轮出现连续两条 user；再发 notice 和 done 事件。", "r": ["agent/loop.ts:89-105"] },
+  "E1": { "t": "yield done 事件", "d": "done 携带停止原因、迭代次数、执行的工具数、最终文本。界面据此把流式缓冲落成正式消息，显示完成标记或错误。", "r": ["agent/loop.ts:97-104", "tui/app.tsx:410-423"] },
+  "E2": { "t": "界面定稿", "d": "finally 里复位流式状态和 AbortController，输入框恢复可用；已定稿消息进入 Ink 的 Static 区，不再重绘。", "r": ["tui/app.tsx:429-435", "tui/app.tsx:502-538"] }
+},
+"request": {
+  "H": { "t": "getMessages 内部历史", "d": "返回 history 的浅拷贝，适配器拿到的是副本，改不到会话本身。", "r": ["conversation/conversation.ts:18-24", "conversation/conversation.ts:70-77"] },
+  "M1": { "t": "buildAnthropicMessages", "d": "assistant 消息展开成 thinking、text、tool_use 块；带 toolResults 的 user 消息展开成 tool_result 块；system 角色跳过；连续的 user 文本合并。", "r": ["llm/anthropic.ts:10-48"] },
+  "R": { "t": "本轮补充指令", "d": "计划模式下按轮次给完整版或精简版指令（每 5 轮重发完整版）；懒池非空时追加 MCP 工具目录。都包在 system-reminder 标签里。", "r": ["prompt/reminder.ts:57-79", "prompt/reminder.ts:22-41"] },
+  "M2": { "t": "appendReminders", "d": "优先并进末条 user 消息：Anthropic 要求 user / assistant 交替，硬推一条会报错。只存在于这次请求里，不进历史。", "r": ["llm/anthropic.ts:50-65"] },
+  "M3": { "t": "缓存断点", "d": "系统提示词两段各打一个 ephemeral 断点；最后一条 user 消息的末尾文本块再打一个。", "r": ["llm/anthropic.ts:67-85"] },
+  "T": { "t": "工具 JSON Schema", "d": "Anthropic 用 input_schema；OpenAI Responses 用扁平 function；兼容协议用嵌套 function。", "r": ["tools/registry.ts:91-118"] },
+  "M4": { "t": "messages.stream 发起请求", "d": "组装 model、max_tokens、system、messages、tools，按配置开启 thinking，带 AbortSignal 发出流式请求。", "r": ["llm/anthropic.ts:150-173"] },
+  "S1": { "t": "text_delta", "d": "正文增量原样转成 StreamEvent text_delta。", "r": ["llm/anthropic.ts:191-205"] },
+  "S2": { "t": "tool_use 块与参数增量", "d": "content_block_start 记下 tool_use 的 id 和 name；之后的 input_json_delta 按 block index 累积参数 JSON 片段。", "r": ["llm/anthropic.ts:180-205"] },
+  "S3": { "t": "message_delta", "d": "携带最终的 stop_reason 和输出 token 数；输入 token 数在 message_start 时就记下了。", "r": ["llm/anthropic.ts:174-180", "llm/anthropic.ts:226-229"] },
+  "N1": { "t": "StreamEvent 统一事件", "d": "与协议无关的流事件类型，OpenAI 适配器产出的是同一套。", "r": ["llm/events.ts:8-21"] },
+  "N2": { "t": "tool_call_complete", "d": "块结束时一次性 JSON.parse 参数。解析失败不抛错，记成 parseError，交给后面判定为 invalid_params。", "r": ["llm/anthropic.ts:206-225"] },
+  "N3": { "t": "stream_end", "d": "流结束后统一发一条 stream_end，带 stopReason 和 usage。", "r": ["llm/anthropic.ts:230-236"] },
+  "CS": { "t": "collectStream 双路收集", "d": "同一次流消费：yield 文本与思考增量，累积 thinking 块、完整工具调用和 usage。tool_call_start / delta 被忽略，工具行等真正执行时再画。", "r": ["agent/collect.ts:20-80"] },
+  "UI": { "t": "界面实时渲染", "d": "text 事件追加到流式缓冲，动态区只显示末尾 8 行；进入工具阶段前先把缓冲落成一条正式消息。", "r": ["tui/app.tsx:348-361", "tui/app.tsx:517-521"] },
+  "LP": { "t": "runLoop 拿到 CollectedResponse", "d": "累计 usage、锚定 token 估算，然后按 toolUses 是否为空决定下一步。", "r": ["agent/loop.ts:133-145"] }
+},
+"tools": {
+  "P0": { "t": "response.toolUses", "d": "collectStream 收集到的工具调用，顺序就是模型给出的顺序，后续不重排。", "r": ["agent/collect.ts:50-57", "conversation/conversation.ts:6-10"] },
+  "P1": { "t": "planBatches 保序分段", "d": "顺序扫描：只读且上一批是并发批就并入，否则新开一批。未知工具无法确认副作用，归串行批。", "r": ["agent/batch.ts:21-38"] },
+  "P2": { "t": "并发批", "d": "按 8 个一组切成子批，子批内 Promise.all 并发；结果按调用原始顺序回写，与完成先后无关。", "r": ["agent/batch.ts:115-132", "tools/limits.ts:24-25"] },
+  "P3": { "t": "串行批", "d": "只含一个调用，执行完才进入下一批。权限确认只会在串行批里发生，所以同一时刻最多一个确认框。", "r": ["agent/batch.ts:99-113"] },
+  "RO": { "t": "runOne", "d": "单个调用的入口：先挡住参数解析失败的调用，其余交给 runTool。", "r": ["agent/batch.ts:45-55"] },
+  "Q0": { "t": "参数 JSON 解析失败?", "d": "流里拼出来的参数不完整时不执行，直接给模型返回错误让它重发。", "r": ["agent/batch.ts:45-55"] },
+  "F1": { "t": "fail invalid_params", "d": "统一的失败构造：ok=false，content 以 Error: 开头回给模型，summary 给界面。", "r": ["tools/types.ts:61-69", "tools/execute.ts:55-58"] },
+  "Q1": { "t": "runTool 唯一入口", "d": "查找、补载、校验、权限、执行、脱敏、截断都在这里，所有工具走同一条路径。", "r": ["tools/execute.ts:23-79"] },
+  "Q2": { "t": "registry.get 命中?", "d": "先查已注册工具；没有再查懒加载池。", "r": ["tools/execute.ts:30-34", "tools/registry.ts:78-80"] },
+  "Q3": { "t": "discover 自动补载", "d": "模型可能跳过 toolSearch 直接按目录名调用。这里自动加载，参数能过校验就当次执行，过不了返回带完整 schema 的错误。", "r": ["tools/execute.ts:32-52", "tools/registry.ts:51-62"] },
+  "F2": { "t": "fail unknown_tool", "d": "registry 和懒池都没有这个名字。连续 3 轮全是未知工具时循环中止。", "r": ["tools/execute.ts:53"] },
+  "Q4": { "t": "validate 参数校验", "d": "按工具的 JSON Schema 校验并归一化参数，后面的权限判定和执行都用归一化后的 value。", "r": ["tools/execute.ts:55-58"] },
+  "K1": { "t": "① 黑名单", "d": "只看 Bash 命令，按危险正则匹配（根目录删除、格式化、curl 管道执行等）。命中即拒，档位和规则都放不开。", "r": ["permission/decide.ts:20-23", "permission/blacklist.ts:4-25"] },
+  "K2": { "t": "② 路径沙箱", "d": "文件工具的路径参数，以及 Bash 命令里的路径片段，都必须落在工作目录内。", "r": ["permission/decide.ts:25-28", "permission/sandbox.ts:40-72"] },
+  "K3": { "t": "③ 规则", "d": "按来源层级查找，高优先级层命中即定；同层内书写靠后的规则赢。", "r": ["permission/decide.ts:37-41", "permission/rules.ts:73-89"] },
+  "K4": { "t": "④ 档位兜底", "d": "规则没命中时查表：只读类总是放行，写类在 acceptEdits 及以上放行，Bash 只在 bypass 放行，其余转为 ask。", "r": ["permission/decide.ts:43-48", "permission/limits.ts:58-75"] },
+  "K5": { "t": "⑤ ConfirmBox 人在回路", "d": "decide 调 gate.confirm，Promise 一直挂起到用户在确认框里选择。选「本会话 / 永久」会把规则写进对应层，Esc 按拒绝兑付。", "r": ["permission/decide.ts:50-77", "tui/app.tsx:152-169", "tui/confirm.tsx:6-30"] },
+  "F3": { "t": "fail permission_denied", "d": "任一层拒绝都在执行之前返回，工具不会产生任何副作用。", "r": ["tools/execute.ts:60-65"] },
+  "X1": { "t": "tool.execute", "d": "执行异常统一转成 exec_failed；只有 AbortError 继续上抛，用于中断。", "r": ["tools/execute.ts:67-74"] },
+  "X2": { "t": "截断与脱敏", "d": "content 超过 30000 字符截断并标注；content 和 summary 都做敏感信息脱敏。", "r": ["tools/execute.ts:8-21", "tools/execute.ts:76-78"] },
+  "OUT": { "t": "ToolResultBlock", "d": "toolUseId 指回对应的 tool_use，保证一一配对。", "r": ["agent/batch.ts:69-71", "conversation/conversation.ts:12-16"] }
+},
+"sequence": [
+  { "t": "1 · 回车提交", "d": "InputBox 把输入交给 handleSubmit。", "r": ["tui/input.tsx:45-53"] },
+  { "t": "2 · addUserMessage", "d": "用户消息写入 history（历史第 1 条）。", "r": ["tui/app.tsx:483-495", "conversation/conversation.ts:30-32"] },
+  { "t": "3 · runLoop 开始", "d": "App 用 for await 消费 runLoop 产出的事件。", "r": ["tui/app.tsx:334-347"] },
+  { "t": "4 · 第 1 次请求", "d": "压缩检查后，带上全部工具定义调模型。", "r": ["agent/loop.ts:107-134"] },
+  { "t": "5 · 返回 text + tool_use Read", "d": "流式解析出一个 Read 调用，参数在块结束时 JSON.parse。", "r": ["llm/anthropic.ts:180-225", "agent/collect.ts:50-57"] },
+  { "t": "6 · addAssistantFull", "d": "写入「我先读一下」+ tool_use Read（历史第 2 条）。", "r": ["agent/loop.ts:147-149"] },
+  { "t": "7 · 执行 Read", "d": "Read 是只读工具，单独成一个并发批。权限判定时黑名单、沙箱不表态，规则未命中，档位兜底表里 read 一律 allow，不弹确认。", "r": ["agent/batch.ts:115-132", "permission/decide.ts:43-44", "permission/limits.ts:58-75"] },
+  { "t": "8 · 返回文件内容", "d": "结果经截断、脱敏后转成 ToolResultBlock。", "r": ["tools/execute.ts:76-78", "agent/batch.ts:69-71"] },
+  { "t": "9 · addToolResultMessage", "d": "Read 结果作为 user · toolResults 写入（历史第 3 条），进入下一次迭代。", "r": ["agent/loop.ts:167-178"] },
+  { "t": "10 · 第 2 次请求", "d": "这次历史里已经有文件内容，模型据此决定怎么改。", "r": ["agent/loop.ts:121-134", "llm/anthropic.ts:10-48"] },
+  { "t": "11 · 返回 tool_use Edit", "d": "模型请求 Edit 工具。", "r": ["agent/collect.ts:50-57"] },
+  { "t": "12 · addAssistantFull", "d": "写入 tool_use Edit（历史第 4 条）。", "r": ["agent/loop.ts:147-149"] },
+  { "t": "13 · 执行 Edit", "d": "Edit 有副作用，单独成串行批。", "r": ["agent/batch.ts:99-113"] },
+  { "t": "14 · confirm 弹出确认框", "d": "默认档下写类工具兜底为 ask，decide 调 gate.confirm，Promise 挂起。", "r": ["permission/decide.ts:43-56", "tui/app.tsx:160-169"] },
+  { "t": "15 · 用户选择允许", "d": "确认框里上下选择、回车确认。", "r": ["tui/confirm.tsx:6-30"] },
+  { "t": "16 · 兑付 allow", "d": "settleConfirm 关闭确认框并 resolve Promise，decide 返回 allow。", "r": ["tui/app.tsx:152-158", "permission/decide.ts:61-77"] },
+  { "t": "17 · 编辑成功", "d": "tool.execute 执行，结果截断、脱敏后返回。", "r": ["tools/execute.ts:67-78"] },
+  { "t": "18 · addToolResultMessage", "d": "Edit 结果写入（历史第 5 条）。", "r": ["agent/loop.ts:167-178"] },
+  { "t": "19 · 第 3 次请求", "d": "模型看到编辑成功的结果。", "r": ["agent/loop.ts:121-134"] },
+  { "t": "20 · toolUses 为空", "d": "模型只回复文本，不再请求工具。", "r": ["agent/loop.ts:140-145"] },
+  { "t": "21 · addAssistantMessage", "d": "最终回复写入（历史第 6 条）。", "r": ["agent/loop.ts:140-145", "conversation/conversation.ts:34-36"] },
+  { "t": "22 · done complete", "d": "finish 发出 done 事件，reason 为 complete。", "r": ["agent/loop.ts:89-105"] },
+  { "t": "23 · 显示完成标记", "d": "界面落定流式缓冲，显示随机完成词。", "r": ["tui/app.tsx:410-423"] }
+]
+}
+</script>
+<script type="application/json" id="source-data">{"agent/batch.ts:115-132":{"start":115,"lines":["    // 并发批：超过并发上限时切子批依次跑，子批之间仍保序。","    for (const subCalls of chunk(batch.calls, MAX_CONCURRENT_TOOLS)) {","      for (const call of subCalls) {","        yield { type: \"tool_start\", toolId: call.id, name: call.name, argSummary: summaryOf(registry, call) };","      }","      const settled = await Promise.all(subCalls.map((call) => runOne(registry, call, context)","        .catch((error: unknown) => {","          if (!isAbort(error)) throw error;","          cancelled = true;","          return cancelledResult(call.name);","        })));","      // 按调用在响应中的原始顺序回写，与实际完成先后无关（N6）。","      for (const [index, call] of subCalls.entries()) {","        const result = settled[index]!;","        yield { type: \"tool_end\", toolId: call.id, ok: result.ok, summary: result.summary };","        results.push(toBlock(call, result));","      }","    }"]},"agent/batch.ts:21-38":{"start":21,"lines":["/**"," * 保序分段（spec F19）：按模型给出的原始顺序扫描，相邻的只读调用合并为一个并发批，"," * 每个有副作用的调用单独成串行批。不重排、不跨串行批合并。"," */","export function planBatches(calls: PendingCall[], registry: ToolRegistry): ToolBatch[] {","  const batches: ToolBatch[] = [];","  for (const call of calls) {","    // 未知工具 get 返回 undefined，自然落到 false，归串行批（无法确认其副作用）。","    const isReadOnly = registry.get(call.name)?.readOnly === true;","    const previous = batches.at(-1);","    if (isReadOnly && previous?.concurrent) {","      previous.calls.push(call);","    } else {","      batches.push({ concurrent: isReadOnly, calls: [call] });","    }","  }","  return batches;","}"]},"agent/batch.ts:45-55":{"start":45,"lines":["async function runOne(","  registry: ToolRegistry,","  call: PendingCall,","  context: ToolContext,","): Promise\u003cToolResult> {","  if (call.parseError) {","    // 参数不完整时不得尝试执行（F17）。","    return fail(\"invalid_params\", `工具 ${call.name} 的参数 JSON 无法解析：${call.parseError}`);","  }","  return runTool(registry, call.name, call.arguments, context);","}"]},"agent/batch.ts:69-71":{"start":69,"lines":["function toBlock(call: PendingCall, result: ToolResult): ToolResultBlock {","  return { toolUseId: call.id, content: result.content, isError: !result.ok };","}"]},"agent/batch.ts:73-136":{"start":73,"lines":["/**"," * 按批次顺序执行（spec F20–F22）：yield 工具事件，return 按调用原始顺序排列的结果。"," * 每个调用都必然产出一条结果，保证与助手消息中的 tool_use 严格配对。"," */","export async function* runBatches(","  batches: ToolBatch[],","  registry: ToolRegistry,","  context: ToolContext,","): AsyncGenerator\u003cAgentEvent, ToolResultBlock[]> {","  const results: ToolResultBlock[] = [];","  let cancelled = context.signal?.aborted === true;","","  for (const batch of batches) {","    cancelled = cancelled || context.signal?.aborted === true;","","    if (cancelled) {","      // 已取消：剩余调用不执行，但仍走完整事件与结果流程，保持配对完整（F22）。","      for (const call of batch.calls) {","        yield { type: \"tool_start\", toolId: call.id, name: call.name, argSummary: summaryOf(registry, call) };","        const result = cancelledResult(call.name);","        yield { type: \"tool_end\", toolId: call.id, ok: false, summary: result.summary };","        results.push(toBlock(call, result));","      }","      continue;","    }","","    if (!batch.concurrent) {","      const call = batch.calls[0]!;","      yield { type: \"tool_start\", toolId: call.id, name: call.name, argSummary: summaryOf(registry, call) };","      let result: ToolResult;","      try {","        result = await runOne(registry, call, context);","      } catch (error) {","        if (!isAbort(error)) throw error;","        cancelled = true;","        result = cancelledResult(call.name);","      }","      yield { type: \"tool_end\", toolId: call.id, ok: result.ok, summary: result.summary };","      results.push(toBlock(call, result));","      continue;","    }","","    // 并发批：超过并发上限时切子批依次跑，子批之间仍保序。","    for (const subCalls of chunk(batch.calls, MAX_CONCURRENT_TOOLS)) {","      for (const call of subCalls) {","        yield { type: \"tool_start\", toolId: call.id, name: call.name, argSummary: summaryOf(registry, call) };","      }","      const settled = await Promise.all(subCalls.map((call) => runOne(registry, call, context)","        .catch((error: unknown) => {","          if (!isAbort(error)) throw error;","          cancelled = true;","          return cancelledResult(call.name);","        })));","      // 按调用在响应中的原始顺序回写，与实际完成先后无关（N6）。","      for (const [index, call] of subCalls.entries()) {","        const result = settled[index]!;","        yield { type: \"tool_end\", toolId: call.id, ok: result.ok, summary: result.summary };","        results.push(toBlock(call, result));","      }","    }","  }","","  return results;","}"]},"agent/batch.ts:99-113":{"start":99,"lines":["    if (!batch.concurrent) {","      const call = batch.calls[0]!;","      yield { type: \"tool_start\", toolId: call.id, name: call.name, argSummary: summaryOf(registry, call) };","      let result: ToolResult;","      try {","        result = await runOne(registry, call, context);","      } catch (error) {","        if (!isAbort(error)) throw error;","        cancelled = true;","        result = cancelledResult(call.name);","      }","      yield { type: \"tool_end\", toolId: call.id, ok: result.ok, summary: result.summary };","      results.push(toBlock(call, result));","      continue;","    }"]},"agent/collect.ts:20-80":{"start":20,"lines":["/**"," * 双路收集器（spec F15/F16）：一次流消费同时做两件事。"," * yield 出文本与思考增量供界面实时渲染，return 出完整响应供循环判断下一步。"," */","export async function* collectStream(","  client: LLMClient,","  conversation: ConversationManager,","  tools: Record\u003cstring, unknown>[],","  options: StreamOptions = {},","): AsyncGenerator\u003cAgentEvent, CollectedResponse> {","  let text = \"\";","  const thinkingBlocks: ThinkingBlock[] = [];","  const toolUses: CollectedResponse[\"toolUses\"] = [];","  const usage = emptyUsage();","  let stopReason = \"end_turn\";","","  try {","    for await (const event of client.stream(conversation, tools, options)) {","      switch (event.type) {","        case \"text_delta\":","          text += event.text;","          yield { type: \"text\", text: event.text };","          break;","        case \"thinking_delta\":","          yield { type: \"thinking\", text: event.text };","          break;","        case \"thinking_complete\":","          // 思考块只入历史供协议重放，不产生事件（界面本期不展示）。","          thinkingBlocks.push({ thinking: event.thinking, signature: event.signature });","          break;","        case \"tool_call_complete\":","          toolUses.push({","            id: event.toolId,","            name: event.toolName,","            arguments: event.arguments,","            ...(event.parseError ? { parseError: event.parseError } : {}),","          });","          break;","        case \"tool_call_start\":","        case \"tool_call_delta\":","          // 工具行由 runBatches 在真正执行前统一发出，此处忽略：","          // 参数还没解析完就画行会导致摘要为空。","          break;","        case \"stream_end\":","          stopReason = event.stopReason;","          usage.inputTokens += event.usage.inputTokens;","          usage.outputTokens += event.usage.outputTokens;","          usage.cacheReadInputTokens += event.usage.cacheReadInputTokens;","          usage.cacheCreationInputTokens += event.usage.cacheCreationInputTokens;","          // 不在此 yield usage：界面需要的是本轮累计值，累加由 loop.ts 负责（F31）。","          break;","      }","    }","  } catch (error) {","    // 取消不是错误，转成 aborted 让循环走正常停止路径；其余错误交 loop 兜成 stream_error。","    if (!isAbort(error)) throw error;","    return { text, thinkingBlocks, toolUses, usage, stopReason, aborted: true };","  }","","  return { text, thinkingBlocks, toolUses, usage, stopReason, aborted: false };","}"]},"agent/collect.ts:50-57":{"start":50,"lines":["        case \"tool_call_complete\":","          toolUses.push({","            id: event.toolId,","            name: event.toolName,","            arguments: event.arguments,","            ...(event.parseError ? { parseError: event.parseError } : {}),","          });","          break;"]},"agent/loop.ts:107-119":{"start":107,"lines":["  try {","    while (iterations \u003c limit) {","      if (signal?.aborted) return yield* finish(\"cancelled\");","","      // 请求前两层检查（上下文 spec F6）：先轻量预防已在结果回灌前做，这里做整体兜底判断。","      const compactionNotice = await options.compactor?.maintain(signal);","      if (compactionNotice) {","        if (options.compactor?.circuitOpen) {","          yield { type: \"notice\", text: compactionNotice, isError: true };","        } else {","          yield { type: \"compaction\", text: compactionNotice };","        }","      }"]},"agent/loop.ts:107-134":{"start":107,"lines":["  try {","    while (iterations \u003c limit) {","      if (signal?.aborted) return yield* finish(\"cancelled\");","","      // 请求前两层检查（上下文 spec F6）：先轻量预防已在结果回灌前做，这里做整体兜底判断。","      const compactionNotice = await options.compactor?.maintain(signal);","      if (compactionNotice) {","        if (options.compactor?.circuitOpen) {","          yield { type: \"notice\", text: compactionNotice, isError: true };","        } else {","          yield { type: \"compaction\", text: compactionNotice };","        }","      }","","      iterations += 1;","      yield { type: \"progress\", iteration: iterations, phase: \"model\", toolsExecuted };","","      // 全部工具都下发：计划档对改文件的约束改由权限层逐次确认承担，不再靠摘掉工具（权限 spec F19）。","      const tools = registry.definitionsFor(protocol);","      // 延迟目录每轮重算（spec LF4）：懒池随发现收缩，空池不注入。","      const lazyEntries = registry.lazyNames().map((name) => ({","        name,","        description: registry.getLazy(name)?.description ?? name,","      }));","      const catalog = lazyCatalogReminder(lazyEntries);","      const reminders = catalog ? [...baseReminders, catalog] : baseReminders;","      //进行流相应；补充指令每次迭代都挂，否则工具结果回灌后模式约束就断了","      const response = yield* collectStream(client, conversation, tools, { signal, reminders });"]},"agent/loop.ts:107-139":{"start":107,"lines":["  try {","    while (iterations \u003c limit) {","      if (signal?.aborted) return yield* finish(\"cancelled\");","","      // 请求前两层检查（上下文 spec F6）：先轻量预防已在结果回灌前做，这里做整体兜底判断。","      const compactionNotice = await options.compactor?.maintain(signal);","      if (compactionNotice) {","        if (options.compactor?.circuitOpen) {","          yield { type: \"notice\", text: compactionNotice, isError: true };","        } else {","          yield { type: \"compaction\", text: compactionNotice };","        }","      }","","      iterations += 1;","      yield { type: \"progress\", iteration: iterations, phase: \"model\", toolsExecuted };","","      // 全部工具都下发：计划档对改文件的约束改由权限层逐次确认承担，不再靠摘掉工具（权限 spec F19）。","      const tools = registry.definitionsFor(protocol);","      // 延迟目录每轮重算（spec LF4）：懒池随发现收缩，空池不注入。","      const lazyEntries = registry.lazyNames().map((name) => ({","        name,","        description: registry.getLazy(name)?.description ?? name,","      }));","      const catalog = lazyCatalogReminder(lazyEntries);","      const reminders = catalog ? [...baseReminders, catalog] : baseReminders;","      //进行流相应；补充指令每次迭代都挂，否则工具结果回灌后模式约束就断了","      const response = yield* collectStream(client, conversation, tools, { signal, reminders });","      addUsage(accumulated, response.usage);","      // 锚定真实 usage：估算器后续只对增量字符折算（上下文 spec F1）。","      options.compactor?.noteUsage(conversation.chars(), response.usage.inputTokens);","      yield { type: \"usage\", usage: { ...accumulated } };","      finalText = response.text;"]},"agent/loop.ts:121-132":{"start":121,"lines":["      iterations += 1;","      yield { type: \"progress\", iteration: iterations, phase: \"model\", toolsExecuted };","","      // 全部工具都下发：计划档对改文件的约束改由权限层逐次确认承担，不再靠摘掉工具（权限 spec F19）。","      const tools = registry.definitionsFor(protocol);","      // 延迟目录每轮重算（spec LF4）：懒池随发现收缩，空池不注入。","      const lazyEntries = registry.lazyNames().map((name) => ({","        name,","        description: registry.getLazy(name)?.description ?? name,","      }));","      const catalog = lazyCatalogReminder(lazyEntries);","      const reminders = catalog ? [...baseReminders, catalog] : baseReminders;"]},"agent/loop.ts:121-134":{"start":121,"lines":["      iterations += 1;","      yield { type: \"progress\", iteration: iterations, phase: \"model\", toolsExecuted };","","      // 全部工具都下发：计划档对改文件的约束改由权限层逐次确认承担，不再靠摘掉工具（权限 spec F19）。","      const tools = registry.definitionsFor(protocol);","      // 延迟目录每轮重算（spec LF4）：懒池随发现收缩，空池不注入。","      const lazyEntries = registry.lazyNames().map((name) => ({","        name,","        description: registry.getLazy(name)?.description ?? name,","      }));","      const catalog = lazyCatalogReminder(lazyEntries);","      const reminders = catalog ? [...baseReminders, catalog] : baseReminders;","      //进行流相应；补充指令每次迭代都挂，否则工具结果回灌后模式约束就断了","      const response = yield* collectStream(client, conversation, tools, { signal, reminders });"]},"agent/loop.ts:133-139":{"start":133,"lines":["      //进行流相应；补充指令每次迭代都挂，否则工具结果回灌后模式约束就断了","      const response = yield* collectStream(client, conversation, tools, { signal, reminders });","      addUsage(accumulated, response.usage);","      // 锚定真实 usage：估算器后续只对增量字符折算（上下文 spec F1）。","      options.compactor?.noteUsage(conversation.chars(), response.usage.inputTokens);","      yield { type: \"usage\", usage: { ...accumulated } };","      finalText = response.text;"]},"agent/loop.ts:133-145":{"start":133,"lines":["      //进行流相应；补充指令每次迭代都挂，否则工具结果回灌后模式约束就断了","      const response = yield* collectStream(client, conversation, tools, { signal, reminders });","      addUsage(accumulated, response.usage);","      // 锚定真实 usage：估算器后续只对增量字符折算（上下文 spec F1）。","      options.compactor?.noteUsage(conversation.chars(), response.usage.inputTokens);","      yield { type: \"usage\", usage: { ...accumulated } };","      finalText = response.text;","      //工具调用为空，说明模型不再请求工具，本轮自然完成（F5）。","      if (response.toolUses.length === 0) {","        if (finalText) conversation.addAssistantMessage(finalText);","        lastWriteWasToolResult = false;","        return yield* finish(response.aborted ? \"cancelled\" : \"complete\");","      }"]},"agent/loop.ts:140-145":{"start":140,"lines":["      //工具调用为空，说明模型不再请求工具，本轮自然完成（F5）。","      if (response.toolUses.length === 0) {","        if (finalText) conversation.addAssistantMessage(finalText);","        lastWriteWasToolResult = false;","        return yield* finish(response.aborted ? \"cancelled\" : \"complete\");","      }"]},"agent/loop.ts:140-178":{"start":140,"lines":["      //工具调用为空，说明模型不再请求工具，本轮自然完成（F5）。","      if (response.toolUses.length === 0) {","        if (finalText) conversation.addAssistantMessage(finalText);","        lastWriteWasToolResult = false;","        return yield* finish(response.aborted ? \"cancelled\" : \"complete\");","      }","","      // parseError 只用于本轮判断，不写进历史。","      const historyTools = response.toolUses.map(({ parseError: _parseError, ...rest }) => rest);","      conversation.addAssistantFull(response.text, response.thinkingBlocks, historyTools);","","      if (response.aborted) {","        // 流在产出工具调用后被中断：调用未执行，全部回灌 cancelled 保持配对（F3/F22）。","        conversation.addToolResultMessage(response.toolUses.map((call) => {","          const result = fail(\"cancelled\", `本轮已中断，工具 ${call.name} 未执行`);","          return { toolUseId: call.id, content: result.content, isError: true };","        }));","        lastWriteWasToolResult = true;","        return yield* finish(\"cancelled\");","      }","","      yield { type: \"progress\", iteration: iterations, phase: \"tools\", toolsExecuted };","","      const batches = planBatches(response.toolUses, registry);","      // runBatches 对每个调用都产出一条结果，results 与 toolUses 长度必然相等（F3）。","      const results = yield* runBatches(batches, registry, { workDir, signal, permission });","      toolsExecuted += results.filter((item) => !item.isError).length;","      // 轻量预防（上下文 spec F2/F3）：结果写入历史前决定存盘或内联。","      const toolNames = new Map(response.toolUses.map((call) => [call.id, call.name]));","      const processed = options.compactor ? await options.compactor.applyLightPrevention(results, toolNames) : results;","      conversation.addToolResultMessage(processed);","      for (const block of processed) {","        yield {","          type: \"tool_output\",","          toolId: block.toolUseId,","          content: block.content.includes(\"[完整输出已存盘：\") ? block.content : \"\",","        };","      }","      lastWriteWasToolResult = true;"]},"agent/loop.ts:147-149":{"start":147,"lines":["      // parseError 只用于本轮判断，不写进历史。","      const historyTools = response.toolUses.map(({ parseError: _parseError, ...rest }) => rest);","      conversation.addAssistantFull(response.text, response.thinkingBlocks, historyTools);"]},"agent/loop.ts:147-159":{"start":147,"lines":["      // parseError 只用于本轮判断，不写进历史。","      const historyTools = response.toolUses.map(({ parseError: _parseError, ...rest }) => rest);","      conversation.addAssistantFull(response.text, response.thinkingBlocks, historyTools);","","      if (response.aborted) {","        // 流在产出工具调用后被中断：调用未执行，全部回灌 cancelled 保持配对（F3/F22）。","        conversation.addToolResultMessage(response.toolUses.map((call) => {","          const result = fail(\"cancelled\", `本轮已中断，工具 ${call.name} 未执行`);","          return { toolUseId: call.id, content: result.content, isError: true };","        }));","        lastWriteWasToolResult = true;","        return yield* finish(\"cancelled\");","      }"]},"agent/loop.ts:161-166":{"start":161,"lines":["      yield { type: \"progress\", iteration: iterations, phase: \"tools\", toolsExecuted };","","      const batches = planBatches(response.toolUses, registry);","      // runBatches 对每个调用都产出一条结果，results 与 toolUses 长度必然相等（F3）。","      const results = yield* runBatches(batches, registry, { workDir, signal, permission });","      toolsExecuted += results.filter((item) => !item.isError).length;"]},"agent/loop.ts:167-169":{"start":167,"lines":["      // 轻量预防（上下文 spec F2/F3）：结果写入历史前决定存盘或内联。","      const toolNames = new Map(response.toolUses.map((call) => [call.id, call.name]));","      const processed = options.compactor ? await options.compactor.applyLightPrevention(results, toolNames) : results;"]},"agent/loop.ts:167-170":{"start":167,"lines":["      // 轻量预防（上下文 spec F2/F3）：结果写入历史前决定存盘或内联。","      const toolNames = new Map(response.toolUses.map((call) => [call.id, call.name]));","      const processed = options.compactor ? await options.compactor.applyLightPrevention(results, toolNames) : results;","      conversation.addToolResultMessage(processed);"]},"agent/loop.ts:167-178":{"start":167,"lines":["      // 轻量预防（上下文 spec F2/F3）：结果写入历史前决定存盘或内联。","      const toolNames = new Map(response.toolUses.map((call) => [call.id, call.name]));","      const processed = options.compactor ? await options.compactor.applyLightPrevention(results, toolNames) : results;","      conversation.addToolResultMessage(processed);","      for (const block of processed) {","        yield {","          type: \"tool_output\",","          toolId: block.toolUseId,","          content: block.content.includes(\"[完整输出已存盘：\") ? block.content : \"\",","        };","      }","      lastWriteWasToolResult = true;"]},"agent/loop.ts:170-178":{"start":170,"lines":["      conversation.addToolResultMessage(processed);","      for (const block of processed) {","        yield {","          type: \"tool_output\",","          toolId: block.toolUseId,","          content: block.content.includes(\"[完整输出已存盘：\") ? block.content : \"\",","        };","      }","      lastWriteWasToolResult = true;"]},"agent/loop.ts:179-192":{"start":179,"lines":["","      // 全部调用都指向未知工具才算无效迭代；混合情况说明模型仍在推进任务（F8）。","      const allUnknown = response.toolUses.every((call) => !registry.get(call.name));","      invalidStreak = allUnknown ? invalidStreak + 1 : 0;","      if (invalidStreak >= MAX_INVALID_ITERATIONS) return yield* finish(\"invalid_tools\");","","      if (signal?.aborted) return yield* finish(\"cancelled\");","    }","","    return yield* finish(\"max_iterations\");","  } catch (error) {","    if (isAbort(error)) return yield* finish(\"cancelled\");","    return yield* finish(\"stream_error\", error instanceof Error ? error.message : String(error));","  }"]},"agent/loop.ts:180-188":{"start":180,"lines":["      // 全部调用都指向未知工具才算无效迭代；混合情况说明模型仍在推进任务（F8）。","      const allUnknown = response.toolUses.every((call) => !registry.get(call.name));","      invalidStreak = allUnknown ? invalidStreak + 1 : 0;","      if (invalidStreak >= MAX_INVALID_ITERATIONS) return yield* finish(\"invalid_tools\");","","      if (signal?.aborted) return yield* finish(\"cancelled\");","    }","","    return yield* finish(\"max_iterations\");"]},"agent/loop.ts:89-105":{"start":89,"lines":["  function* finish(reason: StopReason, errorMessage?: string): Generator\u003cAgentEvent> {","    if (reason !== \"complete\" && lastWriteWasToolResult) {","      // 工具结果在协议层映射为 user 消息，不补助手消息会让下一轮出现连续两条 user。","      conversation.addAssistantMessage(closingText(reason, iterations));","    }","    if (reason !== \"complete\") {","      yield { type: \"notice\", text: noticeText(reason, iterations), isError: reason !== \"cancelled\" };","    }","    yield {","      type: \"done\",","      reason,","      iterations,","      toolsExecuted,","      finalText,","      ...(errorMessage ? { errorMessage } : {}),","    };","  }"]},"agent/loop.ts:97-104":{"start":97,"lines":["    yield {","      type: \"done\",","      reason,","      iterations,","      toolsExecuted,","      finalText,","      ...(errorMessage ? { errorMessage } : {}),","    };"]},"context/compactor.ts:141-185":{"start":141,"lines":["  /**","   * 轻量预防（spec F2/F3）：结果写入历史前调用。","   * 先按单条 2K 判定，再按组合计 8K 从最大者开始依次存盘。","   */","  async applyLightPrevention(blocks: ToolResultBlock[], toolNames: ReadonlyMap\u003cstring, string> = new Map()): Promise\u003cToolResultBlock[]> {","    const processed = [...blocks];","    const nameFor = (block: ToolResultBlock, index: number): string => toolNames.get(block.toolUseId) ?? `tool-${index}`;","    // 已存盘的下标不再重复存盘：预览文本本身不会再超阈值，但显式记录更直观。","    const spilled = new Set\u003cnumber>();","    for (const [index, block] of processed.entries()) {","      const outcome = await maybeSpillResult(","        nameFor(block, index),","        { ok: !block.isError, content: block.content, summary: \"\" },","        this.workDir,","        this.estimator,","        this.settings.toolSpillTokens,","        this.settings.spillPreviewChars,","      );","      if (outcome.spilled) {","        processed[index] = { ...block, content: outcome.content };","        spilled.add(index);","      }","    }","","    // 合计判定（F3）：超 8K 从最大的开始依次存盘，直到回到阈值以内。","    while (this.blocksTokens(processed) > this.settings.messageSpillTokens) {","      let maxIndex = -1;","      let maxValue = -1;","      for (const [index, block] of processed.entries()) {","        if (spilled.has(index)) continue; // 已存盘的不再重复处理","        const value = blockTokens(block);","        if (value > maxValue) {","          maxValue = value;","          maxIndex = index;","        }","      }","      if (maxIndex \u003c 0) break; // 全部已存盘仍超阈值：交由第二层兜底","      const block = processed[maxIndex]!;","      const filePath = spillToFile(nameFor(block, maxIndex), block.content, this.workDir);","      if (!filePath) break; // 存盘失败：放弃合计压缩，避免死循环","      processed[maxIndex] = { ...block, content: buildPreview(block.content, filePath, this.settings.spillPreviewChars) };","      spilled.add(maxIndex);","    }","    return processed;","  }"]},"context/compactor.ts:191-200":{"start":191,"lines":["  /** 每次请求前调用（spec F6）：熔断开 → 直接返回；超线 → 压缩。返回提示文本。 */","  async maintain(signal?: AbortSignal): Promise\u003cstring | null> {","    if (this.circuitOpen) return null;","    const estimated = this.estimator.estimate(this.conversation.chars());","    if (estimated \u003c= this.contextWindow - this.settings.autoMarginTokens) return null;","    const result = await this.runCompaction(signal);","    if (result.compacted) return this.successNotice(result);","    if (result.circuitOpen) return \"压缩连续失败，已暂停自动压缩；可用 /compact 手动重试。\";","    return null;","  }"]},"conversation/conversation.ts:12-16":{"start":12,"lines":["export interface ToolResultBlock {","  toolUseId: string;","  content: string;","  isError?: boolean;","}"]},"conversation/conversation.ts:18-24":{"start":18,"lines":["export interface Message {","  role: \"user\" | \"assistant\" | \"system\";","  content: string;","  thinkingBlocks?: ThinkingBlock[];","  toolUses?: ToolUseBlock[];","  toolResults?: ToolResultBlock[];","}"]},"conversation/conversation.ts:30-32":{"start":30,"lines":["  addUserMessage(content: string): void {","    this.history.push({ role: \"user\", content });","  }"]},"conversation/conversation.ts:34-36":{"start":34,"lines":["  addAssistantMessage(content: string): void {","    this.history.push({ role: \"assistant\", content });","  }"]},"conversation/conversation.ts:38-40":{"start":38,"lines":["  addAssistantFull(content: string, thinkingBlocks?: ThinkingBlock[], toolUses?: ToolUseBlock[]): void {","    this.history.push({ role: \"assistant\", content, thinkingBlocks, toolUses });","  }"]},"conversation/conversation.ts:50-52":{"start":50,"lines":["  addToolResultMessage(toolResults: ToolResultBlock[]): void {","    this.history.push({ role: \"user\", content: \"\", toolResults });","  }"]},"conversation/conversation.ts:6-10":{"start":6,"lines":["export interface ToolUseBlock {","  id: string;","  name: string;","  arguments: Record\u003cstring, unknown>;","}"]},"conversation/conversation.ts:70-77":{"start":70,"lines":["  getMessages(): Message[] {","    return this.history.map((message) => ({","      ...message,","      thinkingBlocks: message.thinkingBlocks ? [...message.thinkingBlocks] : undefined,","      toolUses: message.toolUses ? [...message.toolUses] : undefined,","      toolResults: message.toolResults ? [...message.toolResults] : undefined,","    }));","  }"]},"llm/anthropic.ts:10-48":{"start":10,"lines":["export function buildAnthropicMessages(history: Message[], reminders: string[] = []): Anthropic.MessageParam[] {","  const messages: Anthropic.MessageParam[] = [];","  for (const entry of history) {","    if (entry.role === \"system\") continue;","","    if (entry.role === \"user\" && entry.toolResults?.length) {","      const content: Anthropic.ToolResultBlockParam[] = entry.toolResults.map((result) => ({","        type: \"tool_result\",","        tool_use_id: result.toolUseId,","        content: result.content,","        is_error: result.isError,","      }));","      messages.push({ role: \"user\", content });","      continue;","    }","","    if (entry.role === \"assistant\") {","      const content: Anthropic.ContentBlockParam[] = [];","      for (const thinking of entry.thinkingBlocks ?? []) {","        content.push({ type: \"thinking\", thinking: thinking.thinking, signature: thinking.signature });","      }","      if (entry.content) content.push({ type: \"text\", text: entry.content });","      for (const tool of entry.toolUses ?? []) {","        content.push({ type: \"tool_use\", id: tool.id, name: tool.name, input: tool.arguments });","      }","      messages.push({ role: \"assistant\", content: content.length ? content : \"\" });","      continue;","    }","","    const previous = messages[messages.length - 1];","    if (previous?.role === \"user\" && typeof previous.content === \"string\") {","      previous.content = `${previous.content}\\n\\n${entry.content}`; // 这一步的场景就是用户连续输入多条信息  然后合并后再交给agent处理","    } else {","      messages.push({ role: \"user\", content: entry.content });","    }","  }","  appendReminders(messages, reminders);","  return messages;","}"]},"llm/anthropic.ts:150-173":{"start":150,"lines":["  async *stream(history: Message[], tools: Record\u003cstring, unknown>[], options: StreamOptions = {}): AsyncGenerator\u003cStreamEvent> {","    const messages = buildAnthropicMessages(history, options.reminders ?? []);","    markLastUserTailForCache(messages);","    const usage = emptyUsage();","    let stopReason = \"end_turn\";","    const thinkingByIndex = new Map\u003cnumber, { thinking: string; signature: string }>();","    const toolsByIndex = new Map\u003cnumber, { id: string; name: string; json: string }>();","","    try {","      const params: Anthropic.MessageCreateParamsStreaming = {","        model: this.config.model,","        max_tokens: this.maxOutputTokens,","        stream: true,","        system: buildSystemBlocks(this.segments),","        messages,","        ...(tools.length ? { tools: tools as unknown as Anthropic.Tool[] } : {}),","      };","      if (this.config.thinking) {","        Object.assign(params, supportsAdaptiveThinking(this.config.model)","          ? { thinking: { type: \"adaptive\" } }","          : { thinking: { type: \"enabled\", budget_tokens: this.maxOutputTokens - 1 } });","      }","","      const stream = this.client.messages.stream(params, { signal: options.signal });"]},"llm/anthropic.ts:173-235":{"start":173,"lines":["      const stream = this.client.messages.stream(params, { signal: options.signal });","      for await (const event of stream) {","        if (event.type === \"message_start\") {","          usage.inputTokens = event.message.usage.input_tokens;","          usage.outputTokens = event.message.usage.output_tokens;","          usage.cacheReadInputTokens = event.message.usage.cache_read_input_tokens ?? 0;","          usage.cacheCreationInputTokens = event.message.usage.cache_creation_input_tokens ?? 0;","        } else if (event.type === \"content_block_start\") {","          if (event.content_block.type === \"thinking\") {","            thinkingByIndex.set(event.index, { thinking: \"\", signature: \"\" });","          } else if (event.content_block.type === \"tool_use\") {","            toolsByIndex.set(event.index, {","              id: event.content_block.id,","              name: event.content_block.name,","              json: \"\",","            });","            yield { type: \"tool_call_start\", toolId: event.content_block.id, toolName: event.content_block.name };","          }","        } else if (event.type === \"content_block_delta\") {","          if (event.delta.type === \"text_delta\") {","            yield { type: \"text_delta\", text: event.delta.text };","          } else if (event.delta.type === \"thinking_delta\") {","            const current = thinkingByIndex.get(event.index);","            if (current) current.thinking += event.delta.thinking;","            yield { type: \"thinking_delta\", text: event.delta.thinking };","          } else if (event.delta.type === \"signature_delta\") {","            const current = thinkingByIndex.get(event.index);","            if (current) current.signature += event.delta.signature;","          } else if (event.delta.type === \"input_json_delta\") {","            const current = toolsByIndex.get(event.index);","            if (current) current.json += event.delta.partial_json;","            yield { type: \"tool_call_delta\", text: event.delta.partial_json };","          }","        } else if (event.type === \"content_block_stop\") {","          const thinking = thinkingByIndex.get(event.index);","          if (thinking) yield { type: \"thinking_complete\", ...thinking };","          const tool = toolsByIndex.get(event.index);","          if (tool) {","            let argumentsValue: Record\u003cstring, unknown> = {};","            let parseError: string | undefined;","            try {","              argumentsValue = JSON.parse(tool.json) as Record\u003cstring, unknown>;","            } catch (error) {","              parseError = error instanceof Error ? error.message : String(error);","            }","            yield {","              type: \"tool_call_complete\",","              toolId: tool.id,","              toolName: tool.name,","              arguments: argumentsValue,","              ...(parseError ? { parseError } : {}),","            };","          }","        } else if (event.type === \"message_delta\") {","          stopReason = event.delta.stop_reason ?? stopReason;","          usage.outputTokens = event.usage.output_tokens;","        }","      }","    } catch (error) {","      throw classifyAnthropicError(error);","    }","","    yield { type: \"stream_end\", stopReason, usage };"]},"llm/anthropic.ts:174-180":{"start":174,"lines":["      for await (const event of stream) {","        if (event.type === \"message_start\") {","          usage.inputTokens = event.message.usage.input_tokens;","          usage.outputTokens = event.message.usage.output_tokens;","          usage.cacheReadInputTokens = event.message.usage.cache_read_input_tokens ?? 0;","          usage.cacheCreationInputTokens = event.message.usage.cache_creation_input_tokens ?? 0;","        } else if (event.type === \"content_block_start\") {"]},"llm/anthropic.ts:180-205":{"start":180,"lines":["        } else if (event.type === \"content_block_start\") {","          if (event.content_block.type === \"thinking\") {","            thinkingByIndex.set(event.index, { thinking: \"\", signature: \"\" });","          } else if (event.content_block.type === \"tool_use\") {","            toolsByIndex.set(event.index, {","              id: event.content_block.id,","              name: event.content_block.name,","              json: \"\",","            });","            yield { type: \"tool_call_start\", toolId: event.content_block.id, toolName: event.content_block.name };","          }","        } else if (event.type === \"content_block_delta\") {","          if (event.delta.type === \"text_delta\") {","            yield { type: \"text_delta\", text: event.delta.text };","          } else if (event.delta.type === \"thinking_delta\") {","            const current = thinkingByIndex.get(event.index);","            if (current) current.thinking += event.delta.thinking;","            yield { type: \"thinking_delta\", text: event.delta.thinking };","          } else if (event.delta.type === \"signature_delta\") {","            const current = thinkingByIndex.get(event.index);","            if (current) current.signature += event.delta.signature;","          } else if (event.delta.type === \"input_json_delta\") {","            const current = toolsByIndex.get(event.index);","            if (current) current.json += event.delta.partial_json;","            yield { type: \"tool_call_delta\", text: event.delta.partial_json };","          }"]},"llm/anthropic.ts:180-225":{"start":180,"lines":["        } else if (event.type === \"content_block_start\") {","          if (event.content_block.type === \"thinking\") {","            thinkingByIndex.set(event.index, { thinking: \"\", signature: \"\" });","          } else if (event.content_block.type === \"tool_use\") {","            toolsByIndex.set(event.index, {","              id: event.content_block.id,","              name: event.content_block.name,","              json: \"\",","            });","            yield { type: \"tool_call_start\", toolId: event.content_block.id, toolName: event.content_block.name };","          }","        } else if (event.type === \"content_block_delta\") {","          if (event.delta.type === \"text_delta\") {","            yield { type: \"text_delta\", text: event.delta.text };","          } else if (event.delta.type === \"thinking_delta\") {","            const current = thinkingByIndex.get(event.index);","            if (current) current.thinking += event.delta.thinking;","            yield { type: \"thinking_delta\", text: event.delta.thinking };","          } else if (event.delta.type === \"signature_delta\") {","            const current = thinkingByIndex.get(event.index);","            if (current) current.signature += event.delta.signature;","          } else if (event.delta.type === \"input_json_delta\") {","            const current = toolsByIndex.get(event.index);","            if (current) current.json += event.delta.partial_json;","            yield { type: \"tool_call_delta\", text: event.delta.partial_json };","          }","        } else if (event.type === \"content_block_stop\") {","          const thinking = thinkingByIndex.get(event.index);","          if (thinking) yield { type: \"thinking_complete\", ...thinking };","          const tool = toolsByIndex.get(event.index);","          if (tool) {","            let argumentsValue: Record\u003cstring, unknown> = {};","            let parseError: string | undefined;","            try {","              argumentsValue = JSON.parse(tool.json) as Record\u003cstring, unknown>;","            } catch (error) {","              parseError = error instanceof Error ? error.message : String(error);","            }","            yield {","              type: \"tool_call_complete\",","              toolId: tool.id,","              toolName: tool.name,","              arguments: argumentsValue,","              ...(parseError ? { parseError } : {}),","            };","          }"]},"llm/anthropic.ts:191-205":{"start":191,"lines":["        } else if (event.type === \"content_block_delta\") {","          if (event.delta.type === \"text_delta\") {","            yield { type: \"text_delta\", text: event.delta.text };","          } else if (event.delta.type === \"thinking_delta\") {","            const current = thinkingByIndex.get(event.index);","            if (current) current.thinking += event.delta.thinking;","            yield { type: \"thinking_delta\", text: event.delta.thinking };","          } else if (event.delta.type === \"signature_delta\") {","            const current = thinkingByIndex.get(event.index);","            if (current) current.signature += event.delta.signature;","          } else if (event.delta.type === \"input_json_delta\") {","            const current = toolsByIndex.get(event.index);","            if (current) current.json += event.delta.partial_json;","            yield { type: \"tool_call_delta\", text: event.delta.partial_json };","          }"]},"llm/anthropic.ts:206-225":{"start":206,"lines":["        } else if (event.type === \"content_block_stop\") {","          const thinking = thinkingByIndex.get(event.index);","          if (thinking) yield { type: \"thinking_complete\", ...thinking };","          const tool = toolsByIndex.get(event.index);","          if (tool) {","            let argumentsValue: Record\u003cstring, unknown> = {};","            let parseError: string | undefined;","            try {","              argumentsValue = JSON.parse(tool.json) as Record\u003cstring, unknown>;","            } catch (error) {","              parseError = error instanceof Error ? error.message : String(error);","            }","            yield {","              type: \"tool_call_complete\",","              toolId: tool.id,","              toolName: tool.name,","              arguments: argumentsValue,","              ...(parseError ? { parseError } : {}),","            };","          }"]},"llm/anthropic.ts:226-229":{"start":226,"lines":["        } else if (event.type === \"message_delta\") {","          stopReason = event.delta.stop_reason ?? stopReason;","          usage.outputTokens = event.usage.output_tokens;","        }"]},"llm/anthropic.ts:230-236":{"start":230,"lines":["      }","    } catch (error) {","      throw classifyAnthropicError(error);","    }","","    yield { type: \"stream_end\", stopReason, usage };","  }"]},"llm/anthropic.ts:50-65":{"start":50,"lines":["/**"," * 把补充指令挂到消息数组末尾，尽量贴近生成位置。"," * 优先合并进末条 user 消息：Anthropic 协议要求 user/assistant 交替，硬推一条会报错。"," */","function appendReminders(messages: Anthropic.MessageParam[], reminders: string[]): void {","  if (reminders.length === 0) return;","  const text = reminders.join(\"\\n\\n\");","  const last = messages[messages.length - 1];","  if (last?.role === \"user\") {","    last.content = typeof last.content === \"string\"","      ? `${last.content}\\n\\n${text}`","      : [...last.content, { type: \"text\", text }];","    return;","  }","  messages.push({ role: \"user\", content: text });","}"]},"llm/anthropic.ts:67-85":{"start":67,"lines":["export function markLastUserTailForCache(messages: Anthropic.MessageParam[]): void {","  const lastUser = [...messages].reverse().find((message) => message.role === \"user\");","  if (!lastUser || typeof lastUser.content === \"string\" || lastUser.content.length === 0) return;","  const last = lastUser.content[lastUser.content.length - 1];","  if (last.type === \"text\") {","    Object.assign(last, { cache_control: { type: \"ephemeral\" } });","  }","}","","/**"," * 两个缓存断点：稳定段整个会话不变，环境段按天、按模型变化，各自独立成缓存单元。"," * 抽成函数是为了能在测试里直接断言块数与缓存标记，不必发真实请求。"," */","export function buildSystemBlocks(segments: SystemPromptSegments): Anthropic.TextBlockParam[] {","  return [","    { type: \"text\", text: segments.stable, cache_control: { type: \"ephemeral\" } },","    { type: \"text\", text: segments.environment, cache_control: { type: \"ephemeral\" } },","  ];","}"]},"llm/client.ts:24-47":{"start":24,"lines":["export async function createClient(","  config: ProviderConfig,","  segments: SystemPromptSegments,","): Promise\u003cLLMClient> {","  if (config.protocol === \"anthropic\") {","    const { AnthropicClient } = await import(\"./anthropic.js\");","    const client = new AnthropicClient(config, segments);","    return {","      stream(conversation, tools, options) {","        return client.stream(conversation.getMessages(), tools, options);","      },","    };","  }","","  const { OpenAIClient, OpenAICompatClient } = await import(\"./openai.js\");","  const client = config.protocol === \"openai\"","    ? new OpenAIClient(config, segments)","    : new OpenAICompatClient(config, segments);","  return {","    stream(conversation, tools, options) {","      return client.stream(conversation.getMessages(), tools, options);","    },","  };","}"]},"llm/events.ts:8-21":{"start":8,"lines":["export type StreamEvent =","  | { type: \"text_delta\"; text: string }","  | { type: \"thinking_delta\"; text: string }","  | { type: \"thinking_complete\"; thinking: string; signature: string }","  | { type: \"tool_call_start\"; toolName: string; toolId: string }","  | { type: \"tool_call_delta\"; text: string }","  | {","    type: \"tool_call_complete\";","    toolId: string;","    toolName: string;","    arguments: Record\u003cstring, unknown>;","    parseError?: string;","  }","  | { type: \"stream_end\"; stopReason: string; usage: UsageInfo };"]},"main.tsx:31-39":{"start":31,"lines":["let config;","try {","  config = loadConfig();","} catch (error) {","  const message = error instanceof Error ? error.message : String(error);","  console.error(`Error: ${message}`);","  process.exitCode = 1;","  process.exit();","}"]},"main.tsx:51-66":{"start":51,"lines":["// MCP 工具接入（spec F4）：阻塞启动——连接完成（或全部降级）后再进聊天。","// 退出钩子里清理子进程，不留僵尸（spec N3）。","const registry = createDefaultRegistry();","const manager = new McpManager(config.mcp_servers);","setMcpManager(manager);","let mcpReports: McpServerReport[] = [];","try {","  mcpReports = await manager.connectAll(registry);","} catch (error) {","  // connectAll 内部已按 Server 降级，这里兜底总失败：不阻塞启动。","  console.error(`MCP 初始化失败：${error instanceof Error ? error.message : String(error)}`);","  await manager.disposeAll();","}","process.on(\"exit\", () => {","  void manager.disposeAll();","});"]},"main.tsx:68-73":{"start":68,"lines":["const instance = render(","  \u003cApp providers={config.providers} hooks={config.hooks} registry={registry} mcpReports={mcpReports} contextManagement={config.context_management} />,","  { exitOnCtrlC: false },",");","","await instance.waitUntilExit();"]},"mcp/manager.ts:19-58":{"start":19,"lines":["  /**","   * 并行连接全部启用的 Server（spec F4）：握手 → 列工具 → 延迟登记。","   * 每个 Server 独立超时与降级；报告四态供 TUI 呈现（spec F16）。","   */","  async connectAll(registry: ToolRegistry): Promise\u003cMcpServerReport[]> {","    const names = Object.keys(this.serverConfigs);","    //对于没个mcpserver 都添加上内置的工具","    const reports = await Promise.all(names.map((name) => this.connectOne(name, registry)));","    return reports;","  }","","  private async connectOne(name: string, registry: ToolRegistry): Promise\u003cMcpServerReport> {","    const config = this.serverConfigs[name];","    if (!config) return { name, status: \"failed\", reason: \"配置缺失\" };","    if (!config.enabled) return { name, status: \"disabled\" };","","    try {","      // 获取的是那种的方式 stdio 还是 http","      const transport = this.createTransport(config);","      const client = new McpClient(config, transport);","      await client.connect(); // 握手超时在 client 内部执行","      const tools = await client.listTools();","","      // 延迟分流（spec LF1）：全部登记懒池，不直接 register。","      // loader 闭包持有 client，发现时才生成完整 Tool。","      const registered: string[] = [];","      const warnings: string[] = [];","      for (const def of tools) {","        const registerName = this.resolveRegisterName(registry, name, def.name);","        if (!registerName) {","          warnings.push(def.name);","          continue;","        }","        registry.registerLazy({","          name: registerName,","          description: def.description ?? def.name,","          loader: async () => createMcpTool(name, client, { ...def, name: registerName }),","        });","        registered.push(registerName);","      }"]},"permission/blacklist.ts:4-25":{"start":4,"lines":["/**"," * 第一层：危险命令黑名单（spec F4、F5）。"," * 非 Bash 工具直接不表态；命中则拒绝。本层永不返回 allow——"," * 通过黑名单不等于获得放行，后续层仍要继续判定（spec F2、N2）。"," */","export function checkBlacklist(toolName: string, args: Record\u003cstring, unknown>): LayerResult {","  if (toolName !== \"Bash\") return { verdict: \"abstain\" };","","  const command = args.command;","  if (typeof command !== \"string\" || command.trim() === \"\") return { verdict: \"abstain\" };","","  for (const item of DANGEROUS_PATTERNS) {","    item.pattern.lastIndex = 0;","    if (item.pattern.test(command)) {","      return {","        verdict: \"deny\",","        reason: `危险操作被拒绝（${item.label}）：该限制不可通过配置或权限档位放开。`,","      };","    }","  }","  return { verdict: \"abstain\" };","}"]},"permission/decide.ts:11-78":{"start":11,"lines":["/**"," * 五层判定入口（spec F1、F2）。"," * 前两层只 deny / abstain；规则层可放行；档位兜底可放行或转确认；人在回路消解 ask。"," */","export async function decide(","  tool: Tool,","  args: Record\u003cstring, unknown>,","  context: ToolContext,","): Promise\u003cPermissionDecision> {","  const blacklisted = checkBlacklist(tool.name, args);","  if (blacklisted.verdict === \"deny\") {","    return { verdict: \"deny\", layer: \"blacklist\", reason: blacklisted.reason ?? \"危险操作被拒绝\" };","  }","","  const sandboxed = checkSandbox(tool, args, context.workDir);","  if (sandboxed.verdict === \"deny\") {","    return { verdict: \"deny\", layer: \"sandbox\", reason: sandboxed.reason ?? \"路径超出工作目录\" };","  }","","  const gate = context.permission;","  if (!gate) {","    const fallback = MODE_FALLBACK.default[classifyTool(tool)];","    if (fallback === \"allow\") return { verdict: \"allow\", layer: \"mode\" };","    return { verdict: \"deny\", layer: \"mode\", reason: NO_INTERACTIVE };","  }","","  const ruled = checkRules(gate.rules, tool.name, args);","  if (ruled.verdict === \"allow\") return { verdict: \"allow\", layer: \"rule\" };","  if (ruled.verdict === \"deny\") {","    return { verdict: \"deny\", layer: \"rule\", reason: ruled.reason ?? \"规则拒绝\" };","  }","","  const fallback = MODE_FALLBACK[gate.mode][classifyTool(tool)];","  if (fallback === \"allow\") return { verdict: \"allow\", layer: \"mode\" };","","  if (!gate.confirm) {","    return { verdict: \"deny\", layer: \"human\", reason: NO_INTERACTIVE };","  }","","  let choice: ConfirmChoice;","  try {","    choice = await gate.confirm({","      toolName: tool.name,","      summary: tool.callSummary(args),","      ruleCandidate: ruleTextFor(tool, args),","    });","  } catch {","    return { verdict: \"deny\", layer: \"human\", reason: NO_INTERACTIVE };","  }","","  if (choice === \"deny\") return { verdict: \"deny\", layer: \"human\", reason: USER_DENIED };","","  if (choice === \"session\" || choice === \"always\") {","    const source = choice === \"always\" ? \"local\" : \"session\";","    const text = ruleTextFor(tool, args);","    const granted: Rule = parseRule(text, \"allow\", source, gate.rules.layers[source].length) ?? {","      tool: tool.name,","      pattern: text,","      effect: \"allow\",","      source,","      order: gate.rules.layers[source].length,","    };","    if (choice === \"session\") gate.grantSession(granted);","    else gate.grantAlways(granted);","  }","","  return { verdict: \"allow\", layer: \"human\" };","}"]},"permission/decide.ts:20-23":{"start":20,"lines":["  const blacklisted = checkBlacklist(tool.name, args);","  if (blacklisted.verdict === \"deny\") {","    return { verdict: \"deny\", layer: \"blacklist\", reason: blacklisted.reason ?? \"危险操作被拒绝\" };","  }"]},"permission/decide.ts:25-28":{"start":25,"lines":["  const sandboxed = checkSandbox(tool, args, context.workDir);","  if (sandboxed.verdict === \"deny\") {","    return { verdict: \"deny\", layer: \"sandbox\", reason: sandboxed.reason ?? \"路径超出工作目录\" };","  }"]},"permission/decide.ts:37-41":{"start":37,"lines":["  const ruled = checkRules(gate.rules, tool.name, args);","  if (ruled.verdict === \"allow\") return { verdict: \"allow\", layer: \"rule\" };","  if (ruled.verdict === \"deny\") {","    return { verdict: \"deny\", layer: \"rule\", reason: ruled.reason ?? \"规则拒绝\" };","  }"]},"permission/decide.ts:43-44":{"start":43,"lines":["  const fallback = MODE_FALLBACK[gate.mode][classifyTool(tool)];","  if (fallback === \"allow\") return { verdict: \"allow\", layer: \"mode\" };"]},"permission/decide.ts:43-48":{"start":43,"lines":["  const fallback = MODE_FALLBACK[gate.mode][classifyTool(tool)];","  if (fallback === \"allow\") return { verdict: \"allow\", layer: \"mode\" };","","  if (!gate.confirm) {","    return { verdict: \"deny\", layer: \"human\", reason: NO_INTERACTIVE };","  }"]},"permission/decide.ts:43-56":{"start":43,"lines":["  const fallback = MODE_FALLBACK[gate.mode][classifyTool(tool)];","  if (fallback === \"allow\") return { verdict: \"allow\", layer: \"mode\" };","","  if (!gate.confirm) {","    return { verdict: \"deny\", layer: \"human\", reason: NO_INTERACTIVE };","  }","","  let choice: ConfirmChoice;","  try {","    choice = await gate.confirm({","      toolName: tool.name,","      summary: tool.callSummary(args),","      ruleCandidate: ruleTextFor(tool, args),","    });"]},"permission/decide.ts:50-77":{"start":50,"lines":["  let choice: ConfirmChoice;","  try {","    choice = await gate.confirm({","      toolName: tool.name,","      summary: tool.callSummary(args),","      ruleCandidate: ruleTextFor(tool, args),","    });","  } catch {","    return { verdict: \"deny\", layer: \"human\", reason: NO_INTERACTIVE };","  }","","  if (choice === \"deny\") return { verdict: \"deny\", layer: \"human\", reason: USER_DENIED };","","  if (choice === \"session\" || choice === \"always\") {","    const source = choice === \"always\" ? \"local\" : \"session\";","    const text = ruleTextFor(tool, args);","    const granted: Rule = parseRule(text, \"allow\", source, gate.rules.layers[source].length) ?? {","      tool: tool.name,","      pattern: text,","      effect: \"allow\",","      source,","      order: gate.rules.layers[source].length,","    };","    if (choice === \"session\") gate.grantSession(granted);","    else gate.grantAlways(granted);","  }","","  return { verdict: \"allow\", layer: \"human\" };"]},"permission/decide.ts:61-77":{"start":61,"lines":["  if (choice === \"deny\") return { verdict: \"deny\", layer: \"human\", reason: USER_DENIED };","","  if (choice === \"session\" || choice === \"always\") {","    const source = choice === \"always\" ? \"local\" : \"session\";","    const text = ruleTextFor(tool, args);","    const granted: Rule = parseRule(text, \"allow\", source, gate.rules.layers[source].length) ?? {","      tool: tool.name,","      pattern: text,","      effect: \"allow\",","      source,","      order: gate.rules.layers[source].length,","    };","    if (choice === \"session\") gate.grantSession(granted);","    else gate.grantAlways(granted);","  }","","  return { verdict: \"allow\", layer: \"human\" };"]},"permission/limits.ts:58-75":{"start":58,"lines":["/**"," * 档位兜底表（spec F14 那张表的数据化形式）。"," * 只有 allow 与 ask 两种取值——四档中没有任何一档的兜底是直接拒绝。"," * 兜底只在规则未命中时生效，命中的规则不受档位影响（spec F15）。"," */","export const MODE_FALLBACK: Record\u003cPermissionMode, Record\u003cToolClass, \"allow\" | \"ask\">> = {","  plan: { read: \"allow\", write: \"ask\", bash: \"ask\" },","  default: { read: \"allow\", write: \"ask\", bash: \"ask\" },","  acceptEdits: { read: \"allow\", write: \"allow\", bash: \"ask\" },","  bypass: { read: \"allow\", write: \"allow\", bash: \"allow\" },","};","","/** 工具分类（spec F14）：只读归 read，Bash 单列，其余算写类。 */","export function classifyTool(tool: Tool): ToolClass {","  if (tool.readOnly) return \"read\";","  if (tool.name === \"Bash\") return \"bash\";","  return \"write\";","}"]},"permission/rules.ts:73-89":{"start":73,"lines":["/**"," * 第三层：按四层来源查找（spec F12、F13）。"," * 高优先级层命中即定；同层内取 order 最大的命中项（书写靠后的赢）。"," */","export function checkRules(rules: RuleSet, toolName: string, args: Record\u003cstring, unknown>): LayerResult {","  for (const source of LAYER_ORDER) {","    const hits = rules.layers[source].filter((rule) => matchRule(rule, toolName, args));","    if (hits.length === 0) continue;","    const winner = hits.reduce((current, next) => (next.order >= current.order ? next : current));","    if (winner.effect === \"allow\") return { verdict: \"allow\" };","    return {","      verdict: \"deny\",","      reason: `规则拒绝：${winner.tool}(${winner.pattern})（来源：${source}）`,","    };","  }","  return { verdict: \"abstain\" };","}"]},"permission/sandbox.ts:40-72":{"start":40,"lines":["/**"," * 第二层：路径沙箱（spec F6–F8）。"," * 文件类工具的路径参数与 Bash 命令文本里的路径片段都限制在工作目录内。"," * 本层永不返回 allow——通过沙箱不等于获得放行（spec F2、N2）。"," * 与各工具 execute 内部的 resolveInside 是有意重复：沙箱必须作为不可放开的独立层存在（plan P4）。"," */","export function checkSandbox(tool: Tool, args: Record\u003cstring, unknown>, workDir: string): LayerResult {","  if (tool.name === \"Bash\") {","    const command = args.command;","    if (typeof command !== \"string\" || command.trim() === \"\") return { verdict: \"abstain\" };","    for (const candidate of extractPathCandidates(command)) {","      const resolved = resolveInside(workDir, candidate);","      if (!resolved.ok) {","        return {","          verdict: \"deny\",","          reason: `命令中的路径超出工作目录，已拒绝访问：${candidate}`,","        };","      }","    }","    return { verdict: \"abstain\" };","  }","","  const field = PATH_ARG_BY_TOOL[tool.name];","  if (!field) return { verdict: \"abstain\" };","  const value = args[field];","  if (typeof value !== \"string\") return { verdict: \"abstain\" };","","  const resolved = resolveInside(workDir, value);","  if (!resolved.ok) {","    return { verdict: \"deny\", reason: resolved.reason };","  }","  return { verdict: \"abstain\" };","}"]},"prompt/builder.ts:73-105":{"start":73,"lines":["export function buildSystemPrompt(","  environment: EnvironmentContext,","  options: BuildOptions = {},","): SystemPromptSegments {","  const stable = new PromptBuilder()","    .add(identitySection())","    .add(safetySection())","    .add(taskModeSection())","    .add(behaviorSection())","    .add(codeStyleSection())","    .add(usingToolsSection(options.tools ?? []))","    .add(outputStyleSection());","","  if (options.customInstructions?.trim()) {","    stable.add({","      name: \"CustomInstructions\",","      priority: PROMPT_PRIORITY.customInstructions,","      content: options.customInstructions,","    });","  }","  if (options.skills?.trim()) {","    stable.add({ name: \"Skills\", priority: PROMPT_PRIORITY.skills, content: options.skills });","  }","  if (options.memory?.trim()) {","    stable.add({ name: \"Memory\", priority: PROMPT_PRIORITY.memory, content: options.memory });","  }","","  // 环境信息单独成段：它按天、按模型变化，混进稳定段会让整个前缀每天失效一次。","  return {","    stable: stable.build(),","    environment: new PromptBuilder().add(environmentSection(environment)).build(),","  };","}"]},"prompt/reminder.ts:22-41":{"start":22,"lines":["/**"," * 延迟工具目录 reminder（spec LF4）：只列名字与一句话描述。"," * 每轮由 loop 重算——懒池随发现收缩，空池不注入。"," */","export function lazyCatalogReminder(pending: LazyCatalogEntry[]): string | undefined {","  if (pending.length === 0) return undefined;","  const lines = pending.map((entry) => {","    const desc = entry.description.length > CATALOG_DESC_MAX_CHARS","      ? `${entry.description.slice(0, CATALOG_DESC_MAX_CHARS - 1)}…`","      : entry.description;","    return `- ${entry.name}: ${desc}`;","  });","  const content = [","    `当前有 ${pending.length} 个延迟加载工具未下发完整定义（只列目录以节省上下文）。`,","    ...lines,","    `需要使用其中某个工具时，先调用 toolSearch({ \"query\": \"工具名\" }) 获取其完整参数定义；`,","    `加载成功后即可像普通工具一样直接调用。直接调用未加载工具也会被自动加载，但参数需符合其 schema。`,","  ].join(\"\\n\");","  return wrapReminder(content);","}"]},"prompt/reminder.ts:57-79":{"start":57,"lines":["/**"," * 按轮次决定注入哪一版模式指令（spec F17–F19）。"," * 计数要跨轮存活，所以实例由界面层持有，不能建在每轮的 runLoop 里。"," */","export class ModeTracker {","  private mode: AgentMode = \"execute\";","  private turns = 0;","","  /** 模式切换后计数归零，下一轮重新按首轮发完整版。 */","  setMode(mode: AgentMode): void {","    if (mode === this.mode) return;","    this.mode = mode;","    this.turns = 0;","  }","","  /** 每轮开始时调一次，返回本轮要挂载的补充指令；执行模式下为空。 */","  nextTurn(): string[] {","    if (this.mode !== \"plan\") return [];","    const full = this.turns % PLAN_REMINDER_INTERVAL === 0;","    this.turns += 1;","    return [wrapReminder(full ? PLAN_FULL : PLAN_BRIEF)];","  }","}"]},"tools/execute.ts:23-79":{"start":23,"lines":["/** 工具调用的唯一入口：查找、（安全网补载）、校验、权限判定、执行、脱敏、截断。 */","export async function runTool(","  registry: ToolRegistry,","  name: string,","  args: Record\u003cstring, unknown>,","  context: ToolContext,","): Promise\u003cToolResult> {","  let tool = registry.get(name);","","  // 安全网（spec LF5）：registry 未命中先查懒池自动补载——","  // 模型可能跳过 toolSearch 直接按目录名调用（训练习性），不在此拦截会白丢一轮。","  if (!tool && registry.getLazy(name)) {","    const discovered = await registry.discover(name);","    if (discovered) {","      // 参数能过 schema 校验 → 当次直接执行（LF5a/LA6）；","      // 过不了 → 走下方正常校验失败路径，错误信息附 schema（LF5b/LA7）。","      const precheck = validate(discovered.parameters, args);","      if (precheck.ok) {","        tool = discovered;","      } else {","        const props = Object.entries(discovered.parameters.properties)","          .map(([key, prop]) => `  - ${key}（${prop.type}${discovered.parameters.required.includes(key) ? \"，必填\" : \"，可选\"}）：${prop.description}`)","          .join(\"\\n\");","        return fail(","          \"invalid_params\",","          `工具 ${name} 已按目录自动加载，但参数不符：${precheck.errors.join(\"；\")}\\n完整定义：\\n${props || \"（无参数）\"}\\n请按上述 schema 重发调用。`,","        );","      }","    }","  }","  if (!tool) return fail(\"unknown_tool\", `未知工具：${name}`);","","  const validation = validate(tool.parameters, args);","  if (!validation.ok) {","    return fail(\"invalid_params\", validation.errors.join(\"；\"));","  }","","  // 权限判定在执行之前，拒绝时工具不得产生任何副作用（权限 spec F1、N1）。","  // 用 validation.value 而非原始 args：拿到的是归一化后的参数。","  const decision = await decide(tool, validation.value, context);","  if (decision.verdict === \"deny\") {","    return fail(\"permission_denied\", decision.reason);","  }","","  let result: ToolResult;","  try {","    result = await tool.execute(validation.value, context);","  } catch (error) {","    if (error instanceof Error && error.name === \"AbortError\") throw error;","    const message = error instanceof Error ? error.message : String(error);","    result = fail(\"exec_failed\", message);","  }","","  const content = redact(truncateContent(result.content));","  const summary = truncateSummary(redact(result.summary));","  return { ...result, content, summary };","}"]},"tools/execute.ts:30-34":{"start":30,"lines":["  let tool = registry.get(name);","","  // 安全网（spec LF5）：registry 未命中先查懒池自动补载——","  // 模型可能跳过 toolSearch 直接按目录名调用（训练习性），不在此拦截会白丢一轮。","  if (!tool && registry.getLazy(name)) {"]},"tools/execute.ts:32-52":{"start":32,"lines":["  // 安全网（spec LF5）：registry 未命中先查懒池自动补载——","  // 模型可能跳过 toolSearch 直接按目录名调用（训练习性），不在此拦截会白丢一轮。","  if (!tool && registry.getLazy(name)) {","    const discovered = await registry.discover(name);","    if (discovered) {","      // 参数能过 schema 校验 → 当次直接执行（LF5a/LA6）；","      // 过不了 → 走下方正常校验失败路径，错误信息附 schema（LF5b/LA7）。","      const precheck = validate(discovered.parameters, args);","      if (precheck.ok) {","        tool = discovered;","      } else {","        const props = Object.entries(discovered.parameters.properties)","          .map(([key, prop]) => `  - ${key}（${prop.type}${discovered.parameters.required.includes(key) ? \"，必填\" : \"，可选\"}）：${prop.description}`)","          .join(\"\\n\");","        return fail(","          \"invalid_params\",","          `工具 ${name} 已按目录自动加载，但参数不符：${precheck.errors.join(\"；\")}\\n完整定义：\\n${props || \"（无参数）\"}\\n请按上述 schema 重发调用。`,","        );","      }","    }","  }"]},"tools/execute.ts:53":{"start":53,"lines":["  if (!tool) return fail(\"unknown_tool\", `未知工具：${name}`);"]},"tools/execute.ts:55-58":{"start":55,"lines":["  const validation = validate(tool.parameters, args);","  if (!validation.ok) {","    return fail(\"invalid_params\", validation.errors.join(\"；\"));","  }"]},"tools/execute.ts:60-65":{"start":60,"lines":["  // 权限判定在执行之前，拒绝时工具不得产生任何副作用（权限 spec F1、N1）。","  // 用 validation.value 而非原始 args：拿到的是归一化后的参数。","  const decision = await decide(tool, validation.value, context);","  if (decision.verdict === \"deny\") {","    return fail(\"permission_denied\", decision.reason);","  }"]},"tools/execute.ts:67-74":{"start":67,"lines":["  let result: ToolResult;","  try {","    result = await tool.execute(validation.value, context);","  } catch (error) {","    if (error instanceof Error && error.name === \"AbortError\") throw error;","    const message = error instanceof Error ? error.message : String(error);","    result = fail(\"exec_failed\", message);","  }"]},"tools/execute.ts:67-78":{"start":67,"lines":["  let result: ToolResult;","  try {","    result = await tool.execute(validation.value, context);","  } catch (error) {","    if (error instanceof Error && error.name === \"AbortError\") throw error;","    const message = error instanceof Error ? error.message : String(error);","    result = fail(\"exec_failed\", message);","  }","","  const content = redact(truncateContent(result.content));","  const summary = truncateSummary(redact(result.summary));","  return { ...result, content, summary };"]},"tools/execute.ts:76-78":{"start":76,"lines":["  const content = redact(truncateContent(result.content));","  const summary = truncateSummary(redact(result.summary));","  return { ...result, content, summary };"]},"tools/execute.ts:8-21":{"start":8,"lines":["function truncateContent(content: string): string {","  if (content.length \u003c= TOOL_RESULT_MAX_CHARS) return content;","  const marker = `\\n[truncated: kept ${TOOL_RESULT_MAX_CHARS} of ${content.length} chars]`;","  return `${content.slice(0, Math.max(0, TOOL_RESULT_MAX_CHARS - marker.length))}${marker}`;","}","","function oneLine(value: string): string {","  return value.replace(/[\\r\\n]+/g, \" \").replace(/\\s{2,}/g, \" \").trim();","}","","function truncateSummary(summary: string): string {","  const value = oneLine(summary);","  return value.length \u003c= SUMMARY_MAX_CHARS ? value : `${value.slice(0, SUMMARY_MAX_CHARS - 1)}…`;","}"]},"tools/index.ts:21-34":{"start":21,"lines":["/**"," * 创建内置工具注册表，并挂载 toolSearch 元工具（spec LF7）。"," * module 依赖无环：tool-search.ts 只 import 本模块的类型与 registry 类型。"," */","export function createDefaultRegistry(): ToolRegistry {","  const registry = new ToolRegistry()","    .register(ReadTool)","    .register(WriteTool)","    .register(EditTool)","    .register(BashTool)","    .register(GlobTool)","    .register(GrepTool);","  return registry.register(createToolSearchTool(registry));","}"]},"tools/limits.ts:19-25":{"start":19,"lines":["// ── Agent Loop 上限（spec N1）──","// 一轮内模型请求次数上限，兜底安全网：任何模型行为下循环都必须终止。","export const MAX_ITERATIONS = 25;","// 连续「全部调用都指向未知工具」的迭代次数阈值，防模型在不存在的工具上空转。","export const MAX_INVALID_ITERATIONS = 3;","// 并发批最大并发度，超出时切成多个并发子批依次跑，避免耗尽文件句柄。","export const MAX_CONCURRENT_TOOLS = 8;"]},"tools/limits.ts:24-25":{"start":24,"lines":["// 并发批最大并发度，超出时切成多个并发子批依次跑，避免耗尽文件句柄。","export const MAX_CONCURRENT_TOOLS = 8;"]},"tools/registry.ts:21-34":{"start":21,"lines":["export class ToolRegistry {","  private readonly tools = new Map\u003cstring, Tool>();","  private readonly lazy = new Map\u003cstring, RegistryLazyEntry>();","","  register(tool: Tool): this {","    if (this.tools.has(tool.name)) {","      throw new Error(`工具已注册：${tool.name}`);","    }","    if (this.lazy.has(tool.name)) {","      throw new Error(`延迟工具已登记：${tool.name}`);","    }","    this.tools.set(tool.name, tool);","    return this;","  }"]},"tools/registry.ts:51-62":{"start":51,"lines":["  /**","   * 发现延迟工具（spec LF2b/LF5）：执行 loader 并转入 active 集合。","   * 失败时懒池条目保留、registry 不残留半成品（LN5）。","   */","  async discover(name: string): Promise\u003cTool | undefined> {","    const entry = this.lazy.get(name);","    if (!entry) return undefined;","    const tool = await entry.loader();","    this.lazy.delete(name);","    this.tools.set(tool.name, tool);","    return tool;","  }"]},"tools/registry.ts:78-80":{"start":78,"lines":["  get(name: string): Tool | undefined {","    return this.tools.get(name);","  }"]},"tools/registry.ts:91-118":{"start":91,"lines":["  definitionsFor(protocol: ProviderProtocol, options?: DefinitionOptions): ToolDefinition[] {","    const source = options?.readOnlyOnly ? this.listReadOnly() : this.list();","    return source.map((tool) => {","      if (protocol === \"anthropic\") {","        return {","          name: tool.name,","          description: tool.description,","          input_schema: tool.parameters,","        };","      }","      if (protocol === \"openai\") {","        return {","          type: \"function\",","          name: tool.name,","          description: tool.description,","          parameters: tool.parameters,","        };","      }","      return {","        type: \"function\",","        function: {","          name: tool.name,","          description: tool.description,","          parameters: tool.parameters,","        },","      };","    });","  }"]},"tools/types.ts:61-69":{"start":61,"lines":["export function fail(kind: ToolErrorKind, message: string, detail?: Record\u003cstring, unknown>): ToolResult {","  return {","    ok: false,","    content: `Error: ${message}`,","    summary: `failed: ${message}`,","    errorKind: kind,","    ...(detail ? { detail } : {}),","  };","}"]},"tui/app.tsx:152-158":{"start":152,"lines":["  /** 兑付挂起的确认，并清掉确认框。中断与正常选择都走这里。 */","  function settleConfirm(choice: ConfirmChoice): void {","    const resolve = confirmResolveRef.current;","    confirmResolveRef.current = null;","    setPendingConfirm(null);","    resolve?.(choice);","  }"]},"tui/app.tsx:152-169":{"start":152,"lines":["  /** 兑付挂起的确认，并清掉确认框。中断与正常选择都走这里。 */","  function settleConfirm(choice: ConfirmChoice): void {","    const resolve = confirmResolveRef.current;","    confirmResolveRef.current = null;","    setPendingConfirm(null);","    resolve?.(choice);","  }","","  /**","   * 权限确认回调：Promise 挂起到用户按键为止（权限 spec F20）。","   * 只会在串行批里被调用，所以同一时刻最多一个确认框。","   */","  function requestConfirm(request: ConfirmRequest): Promise\u003cConfirmChoice> {","    return new Promise((resolve) => {","      confirmResolveRef.current = resolve;","      setPendingConfirm(request);","    });","  }"]},"tui/app.tsx:160-169":{"start":160,"lines":["  /**","   * 权限确认回调：Promise 挂起到用户按键为止（权限 spec F20）。","   * 只会在串行批里被调用，所以同一时刻最多一个确认框。","   */","  function requestConfirm(request: ConfirmRequest): Promise\u003cConfirmChoice> {","    return new Promise((resolve) => {","      confirmResolveRef.current = resolve;","      setPendingConfirm(request);","    });","  }"]},"tui/app.tsx:233-244":{"start":233,"lines":["  useEffect(() => {","    if (appState !== \"chat\" || !selectedProvider) return;","    let cancelled = false;","    // 提示词里始终列全量工具：随模式增删会改变稳定段字节，切一次模式就废掉整个缓存前缀。","    const toolSummaries = registryRef.current.list().map((tool) => ({","      name: tool.name,","      description: tool.description,","    }));","    const segments = buildSystemPrompt(","      detectEnvironment(workDir, selectedProvider.model),","      { tools: toolSummaries },","    );"]},"tui/app.tsx:233-266":{"start":233,"lines":["  useEffect(() => {","    if (appState !== \"chat\" || !selectedProvider) return;","    let cancelled = false;","    // 提示词里始终列全量工具：随模式增删会改变稳定段字节，切一次模式就废掉整个缓存前缀。","    const toolSummaries = registryRef.current.list().map((tool) => ({","      name: tool.name,","      description: tool.description,","    }));","    const segments = buildSystemPrompt(","      detectEnvironment(workDir, selectedProvider.model),","      { tools: toolSummaries },","    );","    clientRef.current = null;","    void createClient(selectedProvider, segments)","      .then((client) => {","        if (!cancelled) {","          clientRef.current = client;","          // Compactor 跨轮持有熔断计数与估算锚点，随 client 一起就绪（上下文 spec F6）。","          compactorRef.current = new Compactor(","            client,","            conversationRef.current,","            new TokenEstimator(),","            workDir,","            getContextWindow(selectedProvider),","            compactionSettings,","          );","        }","      })","      .catch((cause: unknown) => {","        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));","      });","    void getContextWindowAsync(selectedProvider).catch(() => undefined);","    return () => { cancelled = true; };","  }, [appState, selectedProvider, workDir]);"]},"tui/app.tsx:245-263":{"start":245,"lines":["    clientRef.current = null;","    void createClient(selectedProvider, segments)","      .then((client) => {","        if (!cancelled) {","          clientRef.current = client;","          // Compactor 跨轮持有熔断计数与估算锚点，随 client 一起就绪（上下文 spec F6）。","          compactorRef.current = new Compactor(","            client,","            conversationRef.current,","            new TokenEstimator(),","            workDir,","            getContextWindow(selectedProvider),","            compactionSettings,","          );","        }","      })","      .catch((cause: unknown) => {","        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));","      });"]},"tui/app.tsx:309-347":{"start":309,"lines":["  async function runAgentLoop(): Promise\u003cvoid> {","    const client = clientRef.current;","    if (!client) {","      setError(\"正在初始化 LLM 客户端，请稍后重试。\");","      setIsStreaming(false);","      return;","    }","","    let buffer = \"\";","    let flushedAny = false;","    // 每次迭代的正文各自落成一条消息，避免被下一次迭代的流式文本覆盖（spec F28）。","    function flushBuffer(): void {","      if (!buffer) return;","      const text = buffer;","      buffer = \"\";","      flushedAny = true;","      streamingTextRef.current = \"\";","      setStreamingText(\"\");","      setMessages((previous) => {","        const next: ChatMessage[] = [...previous, { role: \"assistant\", content: text }];","        advanceCommit(next);","        return next;","      });","    }","","    try {","      for await (const event of runLoop({","        client,","        conversation: conversationRef.current,","        registry: registryRef.current,","        protocol: selectedProvider.protocol,","        workDir,","        mode,","        permission: buildGate(),","        compactor: compactorRef.current ?? undefined,","        signal: abortControllerRef.current?.signal,","        // 本轮的模式指令：首轮完整、间隔轮次重复、其余精简（spec F17–F19）。","        reminders: modeTrackerRef.current.nextTurn(),","      })) {"]},"tui/app.tsx:334-347":{"start":334,"lines":["    try {","      for await (const event of runLoop({","        client,","        conversation: conversationRef.current,","        registry: registryRef.current,","        protocol: selectedProvider.protocol,","        workDir,","        mode,","        permission: buildGate(),","        compactor: compactorRef.current ?? undefined,","        signal: abortControllerRef.current?.signal,","        // 本轮的模式指令：首轮完整、间隔轮次重复、其余精简（spec F17–F19）。","        reminders: modeTrackerRef.current.nextTurn(),","      })) {"]},"tui/app.tsx:348-361":{"start":348,"lines":["        switch (event.type) {","          case \"text\":","            buffer += event.text;","            streamingTextRef.current = buffer;","            setStreamingText(buffer);","            break;","          case \"thinking\":","            // 思考增量本期不渲染。","            break;","          case \"progress\":","            if (event.phase === \"tools\") flushBuffer();","            setIteration(event.iteration);","            setPhase(event.phase);","            break;"]},"tui/app.tsx:348-424":{"start":348,"lines":["        switch (event.type) {","          case \"text\":","            buffer += event.text;","            streamingTextRef.current = buffer;","            setStreamingText(buffer);","            break;","          case \"thinking\":","            // 思考增量本期不渲染。","            break;","          case \"progress\":","            if (event.phase === \"tools\") flushBuffer();","            setIteration(event.iteration);","            setPhase(event.phase);","            break;","          case \"tool_start\":","            // 工具行先出现，执行结束后按 toolId 原地补摘要。","            setMessages((previous) => [...previous, {","              role: \"tool_use\",","              toolId: event.toolId,","              content: `${symbols.dot} ${event.argSummary}`,","            }]);","            break;","          case \"tool_end\":","            setMessages((previous) => {","              const next = previous.map((message) => message.toolId === event.toolId","                ? { ...message, content: `${message.content} — ${event.summary}`, isError: !event.ok }","                : message);","              advanceCommit(next);","              return next;","            });","            break;","          case \"tool_output\":","            completedToolIdsRef.current.add(event.toolId);","            setMessages((previous) => {","              const next = previous.map((message) => message.toolId === event.toolId && event.content","                ? { ...message, content: `${message.content}\\n${event.content}` }","                : message);","              advanceCommit(next);","              return next;","            });","            break;","          case \"usage\":","            setInputTokens(event.usage.inputTokens);","            setOutputTokens(event.usage.outputTokens);","            setCacheReadTokens(event.usage.cacheReadInputTokens);","            setCacheCreationTokens(event.usage.cacheCreationInputTokens);","            break;","          case \"notice\":","            setMessages((previous) => {","              const next: ChatMessage[] = [...previous, { role: \"system\", content: event.text, isError: event.isError }];","              advanceCommit(next);","              return next;","            });","            break;","          case \"compaction\":","            // 压缩提示与 notice 同路径渲染（上下文 spec F15）。","            setMessages((previous) => {","              const next: ChatMessage[] = [...previous, { role: \"system\", content: event.text }];","              advanceCommit(next);","              return next;","            });","            break;","          case \"done\":","            flushBuffer();","            if (event.reason === \"complete\") {","              if (flushedAny || event.toolsExecuted > 0) setCompletionMark(randomCompletionVerb());","              else setError(\"模型返回了空内容，请检查 provider 协议、端点地址和模型名称。\");","            } else if (event.reason === \"stream_error\") {","              setError(event.errorMessage ?? \"请求失败\");","            }","            // 其余停止原因已由 notice 事件呈现，不重复提示。","            setMessages((previous) => {","              advanceCommit(previous);","              return previous;","            });","            break;","        }"]},"tui/app.tsx:410-423":{"start":410,"lines":["          case \"done\":","            flushBuffer();","            if (event.reason === \"complete\") {","              if (flushedAny || event.toolsExecuted > 0) setCompletionMark(randomCompletionVerb());","              else setError(\"模型返回了空内容，请检查 provider 协议、端点地址和模型名称。\");","            } else if (event.reason === \"stream_error\") {","              setError(event.errorMessage ?? \"请求失败\");","            }","            // 其余停止原因已由 notice 事件呈现，不重复提示。","            setMessages((previous) => {","              advanceCommit(previous);","              return previous;","            });","            break;"]},"tui/app.tsx:429-435":{"start":429,"lines":["    } finally {","      setIsStreaming(false);","      setStreamingText(\"\");","      streamingTextRef.current = \"\";","      setIteration(0);","      abortControllerRef.current = null;","    }"]},"tui/app.tsx:438-454":{"start":438,"lines":["  /**","   * 切档：斜杠命令与 Shift+Tab 的唯一入口。","   * 档位决定提示词模式（权限 spec F18），所以两者一起定，不单独设 AgentMode。","   * 不往对话里写提示：反馈只靠状态栏左侧的档位字样。","   */","  function switchPermissionMode(nextPermission: PermissionMode): void {","    const info = MODE_INFO[nextPermission];","    // 纯模式开关：不写会话历史、不发模型请求（spec F25）。","    setMode(info.agentMode);","    setPermissionMode(nextPermission);","    // ref 与 state 同写：Gate 从 ref 读档位，流式期间切档也能立刻生效（权限 spec F16）。","    permissionModeRef.current = nextPermission;","    // 计数归零，切过去的下一轮重新发完整版模式指令。","    modeTrackerRef.current.setMode(info.agentMode);","    setCompletionMark(\"\");","    setError(null);","  }"]},"tui/app.tsx:456-481":{"start":456,"lines":["  function handleSubmit(text: string): void {","    if (isStreaming) return;","    if (text === \"/exit\") {","      exit();","      return;","    }","    if (text === \"/compact\") {","      void handleCompact();","      return;","    }","    if (text === \"/plan\") {","      switchPermissionMode(\"plan\");","      return;","    }","    if (text === \"/do\") {","      switchPermissionMode(\"default\");","      return;","    }","    if (text === \"/accept-edits\") {","      switchPermissionMode(\"acceptEdits\");","      return;","    }","    if (text === \"/bypass\") {","      switchPermissionMode(\"bypass\");","      return;","    }"]},"tui/app.tsx:456-496":{"start":456,"lines":["  function handleSubmit(text: string): void {","    if (isStreaming) return;","    if (text === \"/exit\") {","      exit();","      return;","    }","    if (text === \"/compact\") {","      void handleCompact();","      return;","    }","    if (text === \"/plan\") {","      switchPermissionMode(\"plan\");","      return;","    }","    if (text === \"/do\") {","      switchPermissionMode(\"default\");","      return;","    }","    if (text === \"/accept-edits\") {","      switchPermissionMode(\"acceptEdits\");","      return;","    }","    if (text === \"/bypass\") {","      switchPermissionMode(\"bypass\");","      return;","    }","","    setPromptHistory((previous) => [...previous, text]);","    setMessages((previous) => {","      const next: ChatMessage[] = [...previous, { role: \"user\", content: text }];","      advanceCommit(next);","      return next;","    });","    conversationRef.current.addUserMessage(text);","    setCompletionMark(\"\");","    setError(null);","    setStreamingText(\"\");","    setIsStreaming(true);","    abortControllerRef.current = new AbortController();","    void runAgentLoop();","  }"]},"tui/app.tsx:483-495":{"start":483,"lines":["    setPromptHistory((previous) => [...previous, text]);","    setMessages((previous) => {","      const next: ChatMessage[] = [...previous, { role: \"user\", content: text }];","      advanceCommit(next);","      return next;","    });","    conversationRef.current.addUserMessage(text);","    setCompletionMark(\"\");","    setError(null);","    setStreamingText(\"\");","    setIsStreaming(true);","    abortControllerRef.current = new AbortController();","    void runAgentLoop();"]},"tui/app.tsx:502-538":{"start":502,"lines":["  const committed = messages.slice(0, committedIndexRef.current);","  const pending = messages.slice(committedIndexRef.current);","  // banner 与已定稿消息同走静态区：Static 一次写出后不再重绘，","  // 嵌在带 padding 的容器里会被父容器的布局重绘覆盖掉。","  const staticItems: StaticItem[] = [","    { kind: \"banner\" },","    ...committed.map((message) => ({ kind: \"message\" as const, message })),","  ];","  return (","    \u003c>","      \u003cStatic items={staticItems}>","        {(item, index) => item.kind === \"banner\"","          ? \u003cBanner key=\"banner\" providerName={selectedProvider.name} model={selectedProvider.model} workDir={workDir} />","          : \u003cCommittedMessage key={index} message={item.message} />}","      \u003c/Static>","      \u003cBox flexDirection=\"column\" paddingX={1}>","      \u003cChatView","        messages={pending}","        streamingText={isStreaming && streamingText ? tailLines(streamingText, STREAM_TAIL_LINES) : undefined}","      />","      {isStreaming ? \u003cSpinner inputTokens={inputTokens} outputTokens={outputTokens} iteration={iteration} phase={phase} /> : completionMark ? \u003cText color={brand.success}>{symbols.success} {completionMark}\u003c/Text> : null}","      {error ? \u003cText color={brand.error}>{symbols.error} {error}\u003c/Text> : null}","      {/* 确认框与输入框互斥：同时挂载会让两个 useInput 争抢同一批按键。 */}","      {pendingConfirm","        ? \u003cConfirmBox request={pendingConfirm} onChoose={settleConfirm} />","        : \u003cInputBox onSubmit={handleSubmit} disabled={isStreaming} history={promptHistory} />}","      \u003cStatusBar","        model={selectedProvider.model}","        mode={MODE_INFO[permissionMode].label}","        inputTokens={inputTokens}","        outputTokens={outputTokens}","        cacheReadTokens={cacheReadTokens}","        cacheCreationTokens={cacheCreationTokens}","      />","      \u003c/Box>","    \u003c/>","  );"]},"tui/app.tsx:517-521":{"start":517,"lines":["      \u003cBox flexDirection=\"column\" paddingX={1}>","      \u003cChatView","        messages={pending}","        streamingText={isStreaming && streamingText ? tailLines(streamingText, STREAM_TAIL_LINES) : undefined}","      />"]},"tui/confirm.tsx:6-30":{"start":6,"lines":["const OPTIONS: Array\u003c{ choice: ConfirmChoice; label: string }> = [","  { choice: \"once\", label: \"本次放行\" },","  { choice: \"session\", label: \"本会话放行\" },","  { choice: \"always\", label: \"永久放行\" },","  { choice: \"deny\", label: \"拒绝\" },","];","","/**"," * 权限确认框（权限 spec F20）。"," * 弹出期间独占方向键与 Enter；输入框在 app 侧让位，避免两处同时吃键盘。"," */","export function ConfirmBox({","  request,","  onChoose,","}: {","  request: ConfirmRequest;","  onChoose: (choice: ConfirmChoice) => void;","}) {","  const [cursor, setCursor] = useState(0);","","  useInput((_input, key) => {","    if (key.upArrow) setCursor((value) => Math.max(0, value - 1));","    if (key.downArrow) setCursor((value) => Math.min(OPTIONS.length - 1, value + 1));","    if (key.return) onChoose(OPTIONS[cursor]!.choice);","  });"]},"tui/input.tsx:45-53":{"start":45,"lines":["  useInput((input, key) => {","    if (disabled) return;","    if (key.return && !key.shift && !key.ctrl) {","      const text = lines.join(\"\\n\").trim();","      if (text) onSubmit(text);","      setLines([\"\"]);","      setHistoryIndex(null);","      return;","    }"]}}</script>
+
+<script>
+(() => {
+  const NODES = JSON.parse(document.getElementById("node-data").textContent);
+  const SOURCES = JSON.parse(document.getElementById("source-data").textContent);
+  const FIG_NAME = { overview: "图 1 · 总览", request: "图 2 · 模型请求", tools: "图 3 · 工具执行", sequence: "图 4 · 时序", ref: "源码对照" };
+  const drawer = document.getElementById("drawer");
+  const $ = (id) => document.getElementById(id);
+  let lastTrigger = null;
+  let activeEl = null;
+
+  /** 一段源码：文件条 + 复制路径 + 带行号的代码，全部用 textContent 写入。 */
+  function renderSnippet(ref) {
+    const box = document.createElement("div");
+    box.className = "snippet";
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    const label = document.createElement("span");
+    const path = "typescript/src/" + ref;
+    label.textContent = path;
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.textContent = "复制路径";
+    copy.addEventListener("click", () => {
+      navigator.clipboard.writeText(path).then(
+        () => { copy.textContent = "已复制"; },
+        () => {
+          const range = document.createRange();
+          range.selectNodeContents(label);
+          const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+          copy.textContent = "已选中，按 Ctrl+C";
+        },
+      );
+    });
+    bar.append(label, copy);
+    box.append(bar);
+    const src = SOURCES[ref];
+    if (!src) {
+      const miss = document.createElement("div");
+      miss.className = "missing";
+      miss.textContent = "这段源码还没有嵌入页面，请按上面的路径在编辑器里打开。";
+      box.append(miss);
+      return box;
+    }
+    const pre = document.createElement("pre");
+    src.lines.forEach((text, i) => {
+      const row = document.createElement("span");
+      row.className = "ln";
+      const no = document.createElement("i");
+      no.textContent = String(src.start + i);
+      row.append(no, document.createTextNode(text || " "));
+      pre.append(row);
+    });
+    box.append(pre);
+    return box;
+  }
+  function setActive(el) {
+    if (activeEl) activeEl.classList.remove("is-active");
+    activeEl = el;
+    if (el) el.classList.add("is-active");
+  }
+
+  function open(fig, item, trigger) {
+    lastTrigger = trigger || null;
+    $("drawer-fig").textContent = FIG_NAME[fig] || "";
+    $("drawer-title").textContent = item.t;
+    $("drawer-desc").textContent = item.d || "";
+    const list = $("drawer-snippets");
+    list.replaceChildren(...item.r.map((ref) => renderSnippet(ref.replace(/^typescript\/src\//, ""))));
+    drawer.classList.add("open");
+    drawer.setAttribute("aria-hidden", "false");
+    drawer.querySelector(".scroll").scrollTop = 0;
+    $("drawer-close").focus({ preventScroll: true });
+  }
+
+  function close() {
+    drawer.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+    setActive(null);
+    if (lastTrigger && document.contains(lastTrigger)) lastTrigger.focus({ preventScroll: true });
+    lastTrigger = null;
+  }
+
+  /** 让 SVG 元素可点、可聚焦，Enter / 空格与点击同效。 */
+  // 用 WeakSet 记绑定状态：mermaid 先在临时容器里渲染再序列化回 DOM，
+  // 写在属性上的标记会被带到新元素上，新元素却没有监听器。
+  const bound = new WeakSet();
+  function makeClickable(el, label, handler) {
+    if (bound.has(el)) return;
+    bound.add(el);
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", label);
+    el.addEventListener("click", (event) => { event.stopPropagation(); handler(); });
+    el.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); handler(); }
+    });
+  }
+
+  /** mermaid 节点 id 形如 flowchart-A1-0 或 mermaid-xxx-flowchart-A1-0，取中间的节点名。 */
+  function nodeKey(el) {
+    const raw = el.dataset.id || el.id || "";
+    const match = raw.match(/flowchart-(.+?)-\d+$/);
+    return match ? match[1] : raw;
+  }
+
+  function bindFigure(container) {
+    const fig = container.dataset.fig;
+    const svg = container.querySelector("svg");
+    if (!svg || !NODES[fig]) return;
+    if (fig === "sequence") {
+      // 时序图按消息出现顺序对应 sequence 数组；Note 不是消息，不计入。
+      const texts = svg.querySelectorAll("text.messageText");
+      texts.forEach((el, index) => {
+        const item = NODES.sequence[index];
+        if (!item) return;
+        makeClickable(el, item.t, () => { setActive(el); open(fig, item, el); });
+      });
+      return;
+    }
+    svg.querySelectorAll("g.node").forEach((el) => {
+      const item = NODES[fig][nodeKey(el)];
+      if (!item) return;
+      makeClickable(el, item.t, () => { setActive(el); open(fig, item, el); });
+    });
+  }
+
+  function bindAll() { document.querySelectorAll(".diagram[data-fig]").forEach(bindFigure); }
+
+  // 源码对照与历史表格里的引用按钮
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("button.ref");
+    if (!button) return;
+    const row = button.closest("li, tr");
+    let desc = "";
+    if (row) {
+      const copy = row.cloneNode(true);
+      copy.querySelectorAll("button.ref").forEach((b) => b.remove());
+      desc = copy.textContent.replace(/\s+/g, " ").trim();
+    }
+    setActive(null);
+    open("ref", { t: button.dataset.title || button.textContent, d: desc, r: button.dataset.refs.split(",") }, button);
+  });
+  $("drawer-close").addEventListener("click", close);
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && drawer.classList.contains("open")) close(); });
+
+  // 渲染可能来自宿主原生 mermaid，也可能来自下方兜底脚本，都用观察器补绑。
+  new MutationObserver(bindAll).observe(document.querySelector("main"), { childList: true, subtree: true });
+  window.__bindDiagrams = bindAll;
+  bindAll();
+})();
+</script>
+
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+  if (window.mermaid && !document.querySelector("pre.mermaid svg")) {
+    const dark = document.documentElement.dataset.theme === "dark"
+      || (document.documentElement.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+    mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
+    mermaid.run({ querySelector: "pre.mermaid" }).then(() => window.__bindDiagrams?.());
+  }
+</script>

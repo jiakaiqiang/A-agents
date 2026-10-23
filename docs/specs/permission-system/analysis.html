@@ -1,0 +1,868 @@
+<title>MewCode 权限判定流水线</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    /* 冷偏蓝中性 + 施工图墨蓝强调；四种表态各有语义色，与强调色分离 */
+    --ground: #E8ECF0;
+    --surface: #FBFCFD;
+    --surface-sunk: #DFE5EB;
+    --line: #C6D0D9;
+    --line-soft: #D8E0E7;
+    --ink: #16202B;
+    --ink-mid: #47566380;
+    --ink-soft: #576673;
+    --accent: #1F5C8B;
+    --accent-soft: #1f5c8b14;
+    --allow: #2E6B4F;
+    --allow-bg: #2e6b4f16;
+    --deny: #A32E36;
+    --deny-bg: #a32e3614;
+    --ask: #8E5B1F;
+    --ask-bg: #8e5b1f16;
+    --abstain: #6B7884;
+    --abstain-bg: #6b788414;
+
+    --font-body: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Source Han Sans SC", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+    --measure: 62ch;
+    --step--1: 0.8125rem;
+    --step-0: 0.9375rem;
+    --step-1: 1.0625rem;
+    --step-2: 1.3125rem;
+    --step-3: 1.75rem;
+    --step-4: 2.5rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #111820;
+      --surface: #19222B;
+      --surface-sunk: #0C1218;
+      --line: #2C3A46;
+      --line-soft: #232F3A;
+      --ink: #DCE4EC;
+      --ink-mid: #8b9aa880;
+      --ink-soft: #96A5B3;
+      --accent: #74AAD6;
+      --accent-soft: #74aad61f;
+      --allow: #7FC29B;
+      --allow-bg: #7fc29b1f;
+      --deny: #E38B92;
+      --deny-bg: #e38b921f;
+      --ask: #D9A75F;
+      --ask-bg: #d9a75f1f;
+      --abstain: #8D9BA8;
+      --abstain-bg: #8d9ba81f;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #111820;
+    --surface: #19222B;
+    --surface-sunk: #0C1218;
+    --line: #2C3A46;
+    --line-soft: #232F3A;
+    --ink: #DCE4EC;
+    --ink-mid: #8b9aa880;
+    --ink-soft: #96A5B3;
+    --accent: #74AAD6;
+    --accent-soft: #74aad61f;
+    --allow: #7FC29B;
+    --allow-bg: #7fc29b1f;
+    --deny: #E38B92;
+    --deny-bg: #e38b921f;
+    --ask: #D9A75F;
+    --ask-bg: #d9a75f1f;
+    --abstain: #8D9BA8;
+    --abstain-bg: #8d9ba81f;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: var(--step-0);
+    line-height: 1.72;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding: clamp(1.5rem, 4vw, 3.5rem) clamp(1rem, 4vw, 2.5rem) 4rem;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(2.25rem, 4vw, 3.25rem);
+  }
+
+  /* ---------- 通用排版 ---------- */
+  h1, h2, h3, h4 { text-wrap: balance; margin: 0; line-height: 1.28; font-weight: 600; }
+  p { margin: 0; max-width: var(--measure); }
+  code, .mono { font-family: var(--font-mono); font-variant-ligatures: none; }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 0;
+  }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.15em; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  /* ---------- 报头 ---------- */
+  .masthead { display: flex; flex-direction: column; gap: 1.125rem; }
+  .masthead-rule {
+    display: flex; align-items: baseline; gap: 0.75rem;
+    padding-bottom: 0.875rem; border-bottom: 2px solid var(--ink);
+    flex-wrap: wrap;
+  }
+  .masthead-rule .eyebrow:last-child { margin-left: auto; color: var(--ink-soft); }
+  h1 { font-size: var(--step-4); letter-spacing: -0.022em; font-weight: 700; }
+  .lede {
+    font-size: var(--step-1);
+    color: var(--ink-soft);
+    max-width: 54ch;
+  }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.25rem 1.75rem;
+    margin: 0.5rem 0 0;
+    padding-top: 1.125rem;
+    border-top: 1px solid var(--line);
+  }
+  .facts div { display: flex; flex-direction: column; gap: 0.125rem; }
+  .facts dt {
+    font-family: var(--font-mono); font-size: 0.6875rem; font-weight: 500;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-soft);
+  }
+  .facts dd { margin: 0; font-size: var(--step--1); font-family: var(--font-mono); }
+
+  /* ---------- 章节 ---------- */
+  .section { display: grid; grid-template-columns: 4.25rem 1fr; gap: 0 1.5rem; }
+  .section-mark {
+    font-family: var(--font-mono); font-size: 0.75rem; font-weight: 600;
+    letter-spacing: 0.08em; color: var(--accent);
+    padding-top: 0.55rem;
+  }
+  .section-main { display: flex; flex-direction: column; gap: 1.125rem; min-width: 0; }
+  .section h2 {
+    font-size: var(--step-3); letter-spacing: -0.016em;
+    padding-bottom: 0.625rem; border-bottom: 1px solid var(--line);
+  }
+  @media (max-width: 44rem) {
+    .section { grid-template-columns: 1fr; gap: 0.5rem; }
+    .section-mark { padding-top: 0; }
+  }
+
+  /* ---------- 流水线 ---------- */
+  .pipeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  .stage {
+    display: grid;
+    grid-template-columns: 2.5rem 1fr auto;
+    gap: 0.25rem 1rem;
+    padding: 1.125rem 0;
+    border-bottom: 1px solid var(--line-soft);
+    align-items: start;
+  }
+  .stage:first-child { padding-top: 0.25rem; }
+  .stage:last-child { border-bottom: none; }
+  .stage-mark {
+    font-family: var(--font-mono); font-size: 1.0625rem; font-weight: 600;
+    color: var(--accent); letter-spacing: -0.02em;
+  }
+  .stage-body { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+  .stage-body h3 { font-size: var(--step-1); }
+  .stage-body p { font-size: var(--step--1); color: var(--ink-soft); }
+  .stage-src {
+    font-size: 0.75rem; color: var(--ink-soft);
+    background: var(--surface-sunk); padding: 0.1rem 0.4rem; border-radius: 2px;
+    align-self: flex-start;
+  }
+  .stage-verdicts { display: flex; gap: 0.375rem; flex-wrap: wrap; justify-content: flex-end; }
+  @media (max-width: 34rem) {
+    .stage { grid-template-columns: 2rem 1fr; }
+    .stage-verdicts { grid-column: 2; justify-content: flex-start; }
+  }
+
+  .chip {
+    font-family: var(--font-mono); font-size: 0.6875rem; font-weight: 500;
+    letter-spacing: 0.03em;
+    padding: 0.15rem 0.45rem; border-radius: 2px; white-space: nowrap;
+  }
+  .chip-allow { color: var(--allow); background: var(--allow-bg); box-shadow: inset 0 0 0 1px var(--allow-bg); }
+  .chip-deny { color: var(--deny); background: var(--deny-bg); box-shadow: inset 0 0 0 1px var(--deny-bg); }
+  .chip-ask { color: var(--ask); background: var(--ask-bg); box-shadow: inset 0 0 0 1px var(--ask-bg); }
+  .chip-abstain { color: var(--abstain); background: var(--abstain-bg); box-shadow: inset 0 0 0 1px var(--abstain-bg); }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem;
+    font-size: var(--step--1); color: var(--ink-soft);
+    padding-top: 0.25rem;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+  /* ---------- 不变量 ---------- */
+  .invariants { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1rem; }
+  .invariants li {
+    display: grid; grid-template-columns: 1.5rem 1fr; gap: 0.75rem;
+    padding-left: 0.875rem; border-left: 2px solid var(--accent);
+  }
+  .invariants b { font-family: var(--font-mono); font-size: var(--step--1); font-weight: 600; color: var(--accent); padding-top: 0.15rem; }
+  .invariants p:first-of-type { font-weight: 500; }
+  .invariants .why { font-size: var(--step--1); color: var(--ink-soft); }
+  .invariants div { display: flex; flex-direction: column; gap: 0.2rem; }
+
+  /* ---------- 调用链 ---------- */
+  .scroller { overflow-x: auto; }
+  .chain { list-style: none; margin: 0; padding: 0; min-width: 34rem; }
+  .chain li {
+    display: grid; grid-template-columns: 15rem 1fr;
+    gap: 0.25rem 1.25rem; align-items: baseline;
+    padding: 0.5rem 0 0.5rem 1.25rem;
+    border-left: 1px solid var(--line);
+    position: relative;
+  }
+  .chain li::before {
+    content: ""; position: absolute; left: -3px; top: 1.0625rem;
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--line); border: 0;
+  }
+  .chain li:first-child { padding-top: 0.25rem; }
+  .chain li:first-child::before { top: 0.8125rem; }
+  .chain-hit { border-left-color: var(--accent); background: var(--accent-soft); }
+  .chain-hit::before { background: var(--accent); width: 7px; height: 7px; left: -4px; }
+  .chain code { font-size: 0.75rem; color: var(--ink-soft); display: block; }
+  .chain .call { font-family: var(--font-mono); font-size: var(--step--1); color: var(--ink); }
+  .chain .role { font-size: var(--step--1); color: var(--ink-soft); grid-column: 2; }
+  .chain-hit .call { font-weight: 600; }
+
+  /* ---------- 表格 ---------- */
+  table {
+    border-collapse: collapse; width: 100%;
+    font-size: var(--step--1); min-width: 30rem;
+  }
+  caption {
+    text-align: left; font-size: var(--step--1); color: var(--ink-soft);
+    padding-bottom: 0.625rem;
+  }
+  th, td { padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+  thead th {
+    font-family: var(--font-mono); font-size: 0.6875rem; font-weight: 500;
+    letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-soft);
+    border-bottom: 1px solid var(--ink); white-space: nowrap;
+  }
+  tbody tr { border-bottom: 1px solid var(--line-soft); }
+  tbody tr:last-child { border-bottom: none; }
+  td:first-child, th:first-child { padding-left: 0; }
+  .num { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+  .matrix td:not(:first-child) { text-align: center; }
+  .matrix th:not(:first-child) { text-align: center; }
+  .matrix .mode { font-family: var(--font-mono); font-weight: 500; }
+  .row-tied { background: var(--surface-sunk); }
+  .footnote-mark {
+    font-family: var(--font-mono); font-size: 0.625rem; color: var(--accent);
+    vertical-align: super; margin-left: 0.15rem;
+  }
+  .patterns code { font-size: 0.75rem; }
+  .patterns td:nth-child(2) { color: var(--ink-soft); }
+
+  /* ---------- 面板 ---------- */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 1.25rem 1.375rem;
+    display: flex; flex-direction: column; gap: 0.75rem;
+  }
+  .panel h3 { font-size: var(--step-1); }
+  .panel p { font-size: var(--step--1); }
+  .panels { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); }
+
+  .kv { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.625rem; }
+  .kv li { display: grid; grid-template-columns: minmax(0, 13rem) 1fr; gap: 0.15rem 1.25rem; align-items: baseline; }
+  .kv code { font-size: 0.75rem; }
+  .kv span { font-size: var(--step--1); color: var(--ink-soft); }
+  @media (max-width: 40rem) { .kv li { grid-template-columns: 1fr; } }
+
+  /* ---------- 发现 ---------- */
+  .findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1.5rem; }
+  .finding {
+    display: flex; flex-direction: column; gap: 0.625rem;
+    padding: 1.125rem 1.375rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--kind);
+  }
+  .finding-head { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
+  .finding h3 { font-size: var(--step-2); letter-spacing: -0.012em; }
+  .finding-kind {
+    font-family: var(--font-mono); font-size: 0.6875rem; font-weight: 500;
+    letter-spacing: 0.06em; color: var(--kind);
+    padding: 0.15rem 0.45rem; border-radius: 2px; background: var(--kind-bg);
+    white-space: nowrap;
+  }
+  .finding p { font-size: var(--step-0); }
+  .finding .path {
+    font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-soft);
+    background: var(--surface-sunk); padding: 0.5rem 0.7rem; border-radius: 2px;
+    overflow-x: auto; white-space: nowrap; max-width: 100%;
+  }
+  .finding .fix { font-size: var(--step--1); color: var(--ink-soft); }
+  .finding .fix b { color: var(--ink); font-weight: 600; }
+  .kind-defect { --kind: var(--deny); --kind-bg: var(--deny-bg); }
+  .kind-intent { --kind: var(--ask); --kind-bg: var(--ask-bg); }
+  .kind-tradeoff { --kind: var(--abstain); --kind-bg: var(--abstain-bg); }
+
+  /* ---------- 页脚 ---------- */
+  .colophon {
+    display: flex; flex-direction: column; gap: 0.75rem;
+    padding-top: 1.5rem; border-top: 2px solid var(--ink);
+  }
+  .colophon pre {
+    font-family: var(--font-mono); font-size: 0.75rem; margin: 0;
+    background: var(--surface-sunk); padding: 0.875rem 1rem;
+    overflow-x: auto; line-height: 1.6; color: var(--ink-soft);
+  }
+  .colophon p { font-size: var(--step--1); color: var(--ink-soft); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<main class="sheet">
+
+  <header class="masthead">
+    <div class="masthead-rule">
+      <p class="eyebrow">MewCode / typescript</p>
+      <p class="eyebrow">branch dev · 413bc17</p>
+    </div>
+    <h1>权限判定流水线</h1>
+    <p class="lede">
+      工具执行前的一道五层闸门。前两层<strong>只能拒绝、不能放行</strong>，
+      规则层可以放行，档位兜底把没人表态的情况变成放行或提问，
+      最后由人在回路消解提问。判定层不引用任何界面模块。
+    </p>
+    <dl class="facts">
+      <div><dt>判定入口</dt><dd>permission/decide.ts:15</dd></div>
+      <div><dt>挂载点</dt><dd>tools/execute.ts:40</dd></div>
+      <div><dt>模块规模</dt><dd>7 个源文件 / 7 个测试文件</dd></div>
+      <div><dt>验证</dt><dd>bun test · 70 pass · 0 fail</dd></div>
+    </dl>
+  </header>
+
+  <!-- ============ 01 流水线 ============ -->
+  <section class="section">
+    <p class="section-mark">01</p>
+    <div class="section-main">
+      <h2>五层的顺序与权力</h2>
+      <p>
+        顺序本身就是设计的全部要点：每一层能给出的表态不同，
+        <code>abstain</code>（不表态）意味着交给下一层，而不是通过。
+      </p>
+
+      <ol class="pipeline">
+        <li class="stage">
+          <span class="stage-mark">01</span>
+          <div class="stage-body">
+            <h3>危险命令黑名单</h3>
+            <p>只看 Bash。19 条正则，命中即拒，不可被任何配置、档位或规则放开。</p>
+            <code class="stage-src">permission/blacklist.ts:9</code>
+          </div>
+          <div class="stage-verdicts">
+            <span class="chip chip-deny">deny</span>
+            <span class="chip chip-abstain">abstain</span>
+          </div>
+        </li>
+        <li class="stage">
+          <span class="stage-mark">02</span>
+          <div class="stage-body">
+            <h3>路径沙箱</h3>
+            <p>文件类工具的路径参数、Bash 命令文本里的路径片段，都必须落在工作目录内。</p>
+            <code class="stage-src">permission/sandbox.ts:46</code>
+          </div>
+          <div class="stage-verdicts">
+            <span class="chip chip-deny">deny</span>
+            <span class="chip chip-abstain">abstain</span>
+          </div>
+        </li>
+        <li class="stage">
+          <span class="stage-mark">03</span>
+          <div class="stage-body">
+            <h3>规则匹配</h3>
+            <p>四层来源按 session → local → project → user 扫描，高优先层命中即定。</p>
+            <code class="stage-src">permission/rules.ts:56</code>
+          </div>
+          <div class="stage-verdicts">
+            <span class="chip chip-allow">allow</span>
+            <span class="chip chip-deny">deny</span>
+            <span class="chip chip-abstain">abstain</span>
+          </div>
+        </li>
+        <li class="stage">
+          <span class="stage-mark">04</span>
+          <div class="stage-body">
+            <h3>档位兜底</h3>
+            <p>规则没命中时，按「当前档位 × 工具分类」查表。只有放行与提问两种取值。</p>
+            <code class="stage-src">permission/limits.ts:63</code>
+          </div>
+          <div class="stage-verdicts">
+            <span class="chip chip-allow">allow</span>
+            <span class="chip chip-ask">ask</span>
+          </div>
+        </li>
+        <li class="stage">
+          <span class="stage-mark">05</span>
+          <div class="stage-body">
+            <h3>人在回路</h3>
+            <p>弹确认框，Promise 挂起到按键。四个选项：本次 / 本会话 / 永久 / 拒绝。</p>
+            <code class="stage-src">permission/decide.ts:50-77</code>
+          </div>
+          <div class="stage-verdicts">
+            <span class="chip chip-allow">allow</span>
+            <span class="chip chip-deny">deny</span>
+          </div>
+        </li>
+      </ol>
+
+      <div class="legend">
+        <span><span class="chip chip-allow">allow</span> 放行，跳出流水线</span>
+        <span><span class="chip chip-deny">deny</span> 拒绝，跳出流水线</span>
+        <span><span class="chip chip-ask">ask</span> 转交人在回路</span>
+        <span><span class="chip chip-abstain">abstain</span> 不表态，进入下一层</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 02 不变量 ============ -->
+  <section class="section">
+    <p class="section-mark">02</p>
+    <div class="section-main">
+      <h2>三条不变量</h2>
+      <p>这三条约束写在类型定义的注释里，是整套设计的承重墙。破坏任何一条，流水线的安全性就不再成立。</p>
+
+      <ul class="invariants">
+        <li>
+          <b>I</b>
+          <div>
+            <p>前两层没有放行能力，通过它们不等于获得放行。</p>
+            <p class="why">
+              黑名单与沙箱的返回类型只允许 <code>deny</code> 与 <code>abstain</code>，
+              因此不可能成为跳过后续层的通道。
+              <code>permission/types.ts:30-34</code>（spec F2、N2）
+            </p>
+          </div>
+        </li>
+        <li>
+          <b>II</b>
+          <div>
+            <p>四档中没有任何一档的兜底是直接拒绝。</p>
+            <p class="why">
+              <code>MODE_FALLBACK</code> 的值域只有 <code>allow</code> 与 <code>ask</code>。
+              档位只决定「默认放行还是默认问一句」，不承担拒绝职责。
+              <code>permission/limits.ts:58-68</code>（spec F14）
+            </p>
+          </div>
+        </li>
+        <li>
+          <b>III</b>
+          <div>
+            <p>命中的规则不受档位影响。</p>
+            <p class="why">
+              兜底只在规则未命中时生效。写进配置的 allow / deny 是显式意图，
+              切档不会改写它。（spec F15）
+            </p>
+          </div>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ 03 调用链 ============ -->
+  <section class="section">
+    <p class="section-mark">03</p>
+    <div class="section-main">
+      <h2>调用链</h2>
+      <p>
+        界面负责组装 <code>PermissionGate</code> 并原样透传，中间层不解释权限语义；
+        真正的判定点只有一处。
+      </p>
+
+      <div class="scroller">
+        <ol class="chain">
+          <li>
+            <div><code>tui/app.tsx:92</code><span class="call">loadPermissionConfig()</span></div>
+            <p class="role">启动时读三层 YAML，结果存进 <code>permissionConfigRef</code></p>
+          </li>
+          <li>
+            <div><code>tui/app.tsx:151</code><span class="call">buildGate() → PermissionGate</span></div>
+            <p class="role">档位用 getter 读 ref，规则集直接引用 ref</p>
+          </li>
+          <li>
+            <div><code>tui/app.tsx:258</code><span class="call">runLoop({ permission: gate })</span></div>
+            <p class="role">每轮重建 Gate，注入 ReAct 循环</p>
+          </li>
+          <li>
+            <div><code>agent/loop.ts:142</code><span class="call">runBatches(batches, registry, { workDir, signal, permission })</span></div>
+            <p class="role">循环只做透传，自己不读 Gate 里的任何字段</p>
+          </li>
+          <li>
+            <div><code>agent/batch.ts:54</code><span class="call">runTool(registry, call.name, call.arguments, context)</span></div>
+            <p class="role"><code>ToolContext</code> 是 Gate 的载体</p>
+          </li>
+          <li class="chain-hit">
+            <div><code>tools/execute.ts:40</code><span class="call">decide(tool, validation.value, context)</span></div>
+            <p class="role">判定点。拒绝时返回 <code>fail("permission_denied", reason)</code></p>
+          </li>
+          <li>
+            <div><code>tools/execute.ts:47</code><span class="call">tool.execute(validation.value, context)</span></div>
+            <p class="role">仅在放行后执行；拒绝路径下一次都不会被调用</p>
+          </li>
+        </ol>
+      </div>
+
+      <div class="panels">
+        <div class="panel">
+          <h3>判定用归一化后的参数</h3>
+          <p>
+            传给 <code>decide</code> 的是 <code>validation.value</code> 而非原始 <code>args</code>，
+            也就是 schema 校验之后的值。规则匹配与沙箱取值因此看到的是同一份数据，
+            不会出现「校验前后不一致导致判定被绕过」。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>拒绝是零副作用的</h3>
+          <p>
+            判定在执行之前，拒绝时直接返回工具结果，
+            <code>permission_denied</code> 在 <code>ToolErrorKind</code> 里单列，
+            模型能把它和越界、参数错误区分开。
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 04 逐层逻辑 ============ -->
+  <section class="section">
+    <p class="section-mark">04</p>
+    <div class="section-main">
+      <h2>逐层逻辑</h2>
+
+      <h3 style="font-size: var(--step-2); margin-top: 0.5rem;">第一层 · 危险命令黑名单</h3>
+      <p>
+        只对 Bash 生效，其他工具直接不表态。可变空白统一写成 <code>\s+</code>，
+        <code>rm&nbsp;&nbsp;-rf&nbsp;&nbsp;/</code> 这类多空格写法绕不过去。
+        拒绝文案明确写了「该限制不可通过配置或权限档位放开」。
+      </p>
+      <div class="scroller">
+        <table class="patterns">
+          <caption><code>DANGEROUS_PATTERNS</code> · permission/limits.ts:12-46 · 共 19 条</caption>
+          <thead>
+            <tr><th>类别</th><th>典型命令</th><th class="num">条数</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>根目录与盘根删除</td><td><code>rm -rf /</code> · <code>rm --no-preserve-root</code> · <code>rd X:\</code> · <code>del X:\</code></td><td class="num">4</td></tr>
+            <tr><td>裸设备写入</td><td><code>dd of=/dev/…</code> · <code>&gt; /dev/sda</code></td><td class="num">2</td></tr>
+            <tr><td>格式化与分区表</td><td><code>mkfs</code> · <code>format C:</code> · <code>fdisk</code> / <code>parted</code> / <code>diskpart</code></td><td class="num">3</td></tr>
+            <tr><td>下载内容直接执行</td><td><code>curl … | sh</code> · <code>wget … | python</code> · <code>iex (iwr …)</code></td><td class="num">3</td></tr>
+            <tr><td>权限递归放开</td><td><code>chmod -R 777 /</code> · <code>chmod 777 /</code> · <code>chown -R … /</code></td><td class="num">3</td></tr>
+            <tr><td>整机可用性</td><td>fork 炸弹 · <code>shutdown</code> / <code>reboot</code> / <code>halt</code></td><td class="num">2</td></tr>
+            <tr><td>交换区与磁盘擦除</td><td><code>mkswap</code> · <code>swapoff -a</code> · <code>dd if=/dev/zero of=</code></td><td class="num">2</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="font-size: var(--step-2); margin-top: 1rem;">第二层 · 路径沙箱</h3>
+      <p>分两路取路径，最后汇到同一个解析函数。</p>
+      <ul class="kv">
+        <li><code>PATH_ARG_BY_TOOL</code><span>文件类工具按字段名取：Read / Write / Edit 取 <code>file_path</code>，Glob / Grep 取 <code>path</code></span></li>
+        <li><code>extractPathCandidates()</code><span>Bash 先剥出引号内容，再按 <code>&amp;&amp;</code> <code>||</code> <code>;</code> <code>|</code> 与空白切词，挑出「看着像路径」的 token 并去重</span></li>
+        <li><code>resolveInside()</code><span>两路共用。realpath 到最近的已存在祖先再拼回缺失段，所以绝对路径、<code>..</code> 上跳、符号链接逃逸都拦得住，同时能处理「目标文件尚未创建」的写入场景</span></li>
+      </ul>
+      <div class="panel">
+        <h3>与工具内部的重复是有意的</h3>
+        <p>
+          各工具的 <code>execute</code> 内部也会调 <code>resolveInside</code>。
+          沙箱层保留这份重复，是为了让它作为一道不可放开的独立层存在——
+          即使某个工具将来忘了自查，闸门仍在。（sandbox.ts:44，plan P4）
+        </p>
+      </div>
+
+      <h3 style="font-size: var(--step-2); margin-top: 1rem;">第三层 · 规则匹配</h3>
+      <p>
+        规则文本形如 <code>Bash(git *)</code>：取首个 <code>(</code> 与末个 <code>)</code>，
+        允许模式内含括号，但 <code>)</code> 必须落在末尾。
+      </p>
+      <ul class="kv">
+        <li>层间优先级<span><code>session</code> &gt; <code>local</code> &gt; <code>project</code> &gt; <code>user</code>，高优先层命中即定，不再往下看</span></li>
+        <li>层内优先级<span>同层多条命中时取 <code>order</code> 最大的，也就是<strong>书写靠后的赢</strong></span></li>
+        <li>匹配主体<span>Bash 用 <code>command</code> 原文；文件类工具用 <code>toPosix()</code> 归一化后的路径</span></li>
+        <li>通配语义<span>pattern 不含 <code>*</code> 时做精确整串比较；含 <code>*</code> 时转成 <code>[\s\S]*</code>，不区分 <code>*</code> 与 <code>**</code></span></li>
+      </ul>
+
+      <h3 style="font-size: var(--step-2); margin-top: 1rem;">第四层 · 档位兜底</h3>
+      <p>
+        由 <code>MODE_FALLBACK</code> × <code>classifyTool()</code> 查表。
+        分类规则很简单：<code>readOnly</code> 归 read，Bash 单列，其余算 write。
+      </p>
+      <div class="scroller">
+        <table class="matrix">
+          <caption><code>MODE_FALLBACK</code> · permission/limits.ts:63-68 · 行序即 Shift+Tab 的循环顺序</caption>
+          <thead>
+            <tr><th>档位</th><th>read</th><th>write</th><th>bash</th></tr>
+          </thead>
+          <tbody>
+            <tr class="row-tied">
+              <td class="mode">plan<span class="footnote-mark">†</span></td>
+              <td><span class="chip chip-allow">allow</span></td>
+              <td><span class="chip chip-ask">ask</span></td>
+              <td><span class="chip chip-ask">ask</span></td>
+            </tr>
+            <tr class="row-tied">
+              <td class="mode">default<span class="footnote-mark">†</span></td>
+              <td><span class="chip chip-allow">allow</span></td>
+              <td><span class="chip chip-ask">ask</span></td>
+              <td><span class="chip chip-ask">ask</span></td>
+            </tr>
+            <tr>
+              <td class="mode">acceptEdits</td>
+              <td><span class="chip chip-allow">allow</span></td>
+              <td><span class="chip chip-allow">allow</span></td>
+              <td><span class="chip chip-ask">ask</span></td>
+            </tr>
+            <tr>
+              <td class="mode">bypass</td>
+              <td><span class="chip chip-allow">allow</span></td>
+              <td><span class="chip chip-allow">allow</span></td>
+              <td><span class="chip chip-allow">allow</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="fix" style="font-size: var(--step--1); color: var(--ink-soft);">
+        <span class="footnote-mark">†</span>
+        两档在权限层完全等价，取值逐格相同。详见第 07 节第一条。
+      </p>
+
+      <h3 style="font-size: var(--step-2); margin-top: 1rem;">第五层 · 人在回路</h3>
+      <p>
+        <code>gate.confirm</code> 返回一个挂起的 Promise，由 <code>ConfirmBox</code> 的按键兑付。
+        确认框与输入框互斥挂载，避免两个 <code>useInput</code> 争抢同一批按键。
+      </p>
+      <ul class="kv">
+        <li><code>once</code> 本次放行<span>只对这一次调用生效，不落任何存储</span></li>
+        <li><code>session</code> 本会话放行<span>规则 push 进内存 session 层，跨轮存活、进程退出即失效</span></li>
+        <li><code>always</code> 永久放行<span>追加到 <code>.mewcode/config.local.yaml</code> 末尾，同时 push 内存 local 层，本进程立即生效不重读文件</span></li>
+        <li><code>deny</code> 拒绝<span>返回 <code>permission_denied</code>，原因为「用户拒绝了此操作」</span></li>
+      </ul>
+      <div class="panel">
+        <h3>永久放行写的是精确整串</h3>
+        <p>
+          <code>ruleTextFor()</code> 直接用当次调用的命令原文或路径，不做任何泛化。
+          确认框在选中「永久放行」时会把即将写入的规则文本显示出来——
+          授权范围要在点头前看清，避免一次确认授出比预期更大的权限。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 05 配置与状态 ============ -->
+  <section class="section">
+    <p class="section-mark">05</p>
+    <div class="section-main">
+      <h2>配置与运行期状态</h2>
+
+      <div class="scroller">
+        <table>
+          <caption><code>loadPermissionConfig()</code> · permission/config.ts:23-42 · 按此顺序读取</caption>
+          <thead>
+            <tr><th>来源层</th><th>文件</th><th>写入时机</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="mono">user</td><td><code>~/.mewcode/config.yaml</code></td><td>手工编辑</td></tr>
+            <tr><td class="mono">project</td><td><code>&lt;cwd&gt;/.mewcode/config.yaml</code></td><td>手工编辑，随仓库共享</td></tr>
+            <tr><td class="mono">local</td><td><code>&lt;cwd&gt;/.mewcode/config.local.yaml</code></td><td>「永久放行」自动追加</td></tr>
+            <tr><td class="mono">session</td><td>仅内存</td><td>「本会话放行」push</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        三层文件<strong>分别</strong>读取，刻意不复用 <code>mergeConfig</code>——合并会丢掉来源分层，
+        而分层就是优先级本身。<code>permission_mode</code> 字段后读覆盖先读；
+        非法值退回默认档并记一条告警。
+      </p>
+
+      <div class="panels">
+        <div class="panel">
+          <h3>解析失败不静默放开</h3>
+          <p>
+            YAML 解析异常、顶层不是对象、<code>permissions</code> 不是列表、
+            单条规则解析不出来——都只产生 warning 而不影响其他规则，
+            启动时在对话区以 system 消息呈现一次。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>写盘位置决定优先级</h3>
+          <p>
+            <code>appendLocalRule()</code> 追加到 <code>permissions</code> 数组<strong>末尾</strong>，
+            即本层顺序最后、层内优先级最高。目录不存在时递归创建。
+          </p>
+        </div>
+      </div>
+
+      <h3 style="font-size: var(--step-2); margin-top: 1rem;">为什么状态全走 ref</h3>
+      <p>
+        运行期状态用 <code>useRef</code> 而非 <code>useState</code>，两处都是为了避免闭包捕获旧值。
+      </p>
+      <ul class="kv">
+        <li><code>rulesRef</code><span>会话级放行要跨轮累积；Gate 每轮重建时必须读到最新规则集</span></li>
+        <li><code>permissionModeRef</code><span>配合 <code>buildGate()</code> 里的 <code>get mode()</code>：本轮跑到一半按 Shift+Tab，剩余调用也按新档判定。用 state 快照会让整轮都停在旧档</span></li>
+      </ul>
+      <p>
+        切档只有一个入口 <code>switchPermissionMode()</code>，同写 state 与 ref。
+        它是纯模式开关：不写会话历史、不发模型请求。
+        触发方式有两种——Shift+Tab 循环切档（确认框弹出时不切），
+        以及斜杠命令 <code>/plan</code> <code>/do</code> <code>/accept-edits</code> <code>/bypass</code>。
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 06 防死锁 ============ -->
+  <section class="section">
+    <p class="section-mark">06</p>
+    <div class="section-main">
+      <h2>两个方向的防死锁</h2>
+      <p>
+        「挂起等待人回答」这件事有两种死法：没人能回答，或者有人问了但没人兑付。两边都堵上了。
+      </p>
+
+      <div class="panels">
+        <div class="panel">
+          <h3>没人能回答 → 拒绝，不挂起</h3>
+          <ul class="kv" style="gap: 0.5rem;">
+            <li><code>gate</code> 缺省<span>非 TUI 入口与测试环境。按 default 档查表，需要确认的一律拒绝</span></li>
+            <li><code>gate.confirm</code> 缺省<span>同样直接拒绝，理由为「当前环境无法交互确认」</span></li>
+            <li><code>confirm</code> 抛错<span>catch 后走同一条拒绝路径</span></li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>问了没人兑付 → 先按拒绝结清</h3>
+          <p>
+            Esc 中断时，如果有挂起的确认，先 <code>settleConfirm("deny")</code> 再 abort。
+            否则 Promise 永久悬空，<code>runLoop</code> 收不了尾，整个会话卡死。
+          </p>
+          <p class="fix"><code>tui/app.tsx:180-184</code></p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>同一时刻最多一个确认框</h3>
+        <p>
+          这不是靠加锁保证的，而是两个事实的乘积：只读工具在四档里都是 <code>allow</code>，
+          永远走不到 ask；而写类工具与 Bash 各自单独成串行批。
+          所以 <code>confirm</code> 只可能在串行批里被调用，并发批里不会出现。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 07 发现 ============ -->
+  <section class="section">
+    <p class="section-mark">07</p>
+    <div class="section-main">
+      <h2>三点值得留意</h2>
+      <p>三条性质不同：一条要你确认设计意图，一条是明确的错误路径缺陷，一条是既有取舍的另一半。</p>
+
+      <ul class="findings">
+        <li class="finding kind-intent">
+          <div class="finding-head">
+            <h3>计划模式并不阻止改文件</h3>
+            <span class="finding-kind">设计取向 · 待确认</span>
+          </div>
+          <p>
+            <code>MODE_FALLBACK</code> 里 plan 与 default 的取值逐格相同。
+            <code>agent/loop.ts:110</code> 的注释说明这是有意的：计划模式不再靠摘掉工具，
+            改由权限层逐次确认承担。
+          </p>
+          <p>
+            代价是计划模式只是「每次问一次」，而 <code>ConfirmBox</code> 的默认光标停在第一项
+            <strong>本次放行</strong>。习惯性按 Enter 就会在计划模式下改文件。
+          </p>
+          <p class="fix">
+            <b>如果计划模式的定位是「只看不改」：</b>
+            把 write 的兜底改成 deny，或让默认光标落在「拒绝」上。
+            前者改语义，后者只改默认值——取决于你要的是硬约束还是软提醒。
+          </p>
+        </li>
+
+        <li class="finding kind-defect">
+          <div class="finding-head">
+            <h3>永久放行写盘失败会被报成流错误</h3>
+            <span class="finding-kind">缺陷 · 改动很小</span>
+          </div>
+          <p>
+            <code>appendLocalRule</code> 抛错时没有被捕获，异常一路冒到 <code>runLoop</code> 的
+            总 catch，最终以 <code>stream_error</code> 收尾。用户看到的提示是
+            「本轮因请求错误中止」，而实际原因是配置文件写不进去。
+          </p>
+          <p class="path">decide.ts:63-75（无 try） → execute.ts:40（在 try 之外） → batch.ts:106 rethrow → loop.ts:156-158 catch → finish("stream_error")</p>
+          <p class="fix">
+            <b>建议：</b>在 <code>grantAlways</code> 调用处包一层 try，
+            失败时退化成本会话放行并给出真实提示。本次调用已经获得用户点头，
+            不该因为持久化失败而连带中止整轮。
+          </p>
+        </li>
+
+        <li class="finding kind-tradeoff">
+          <div class="finding-head">
+            <h3>Bash 路径识别是纯文本判断，有漏网方向</h3>
+            <span class="finding-kind">既有取舍 · 文档不完整</span>
+          </div>
+          <p>
+            <code>looksLikePath()</code> 只认三种形态：以 <code>/</code> 开头、
+            <code>X:\</code> 盘符、含 <code>..</code> 段。
+            像 <code>cat $HOME/.ssh/id_rsa</code> 三条都不满足，沙箱不表态——
+            这类命令的实际兜底是黑名单加档位 ask，而不是沙箱。
+          </p>
+          <p>
+            源码注释已标注了反方向的误判（<code>grep -r ".." .</code> 里的 <code>..</code> 会被当成路径），
+            漏网方向没写，属于同一取舍的另一半。
+          </p>
+          <p class="fix">
+            <b>建议：</b>要真正收紧得引入 shell 词法解析，成本不小。
+            低成本的一步是把「不带 <code>/</code> 前缀但含 <code>/</code>」的 token 也纳入候选，
+            并把漏网方向补进注释。
+          </p>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="colophon">
+    <p class="eyebrow">验证</p>
+    <pre>$ bun test tests/permission/
+
+ 70 pass
+ 0 fail
+ 158 expect() calls
+Ran 70 tests across 7 files. [347.00ms]</pre>
+    <p>
+      测试覆盖 blacklist / sandbox / rules / limits / config / decide 六个单测文件加一个 integration。
+      本报告的每处 <code>文件:行号</code> 均来自对当前 <code>dev</code> 分支源码的直接阅读；
+      未做端到端 TUI 手测，确认框的按键行为与 <code>ConfirmBox</code> 的默认光标位置是从源码推断的。
+    </p>
+  </footer>
+
+</main>
