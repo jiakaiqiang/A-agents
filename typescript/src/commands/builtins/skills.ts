@@ -70,6 +70,7 @@ const SOURCE_LABELS: Record<SkillSource, string> = { builtin: "内部", user: "�
 /**
  * 启动期装配（Skill plan「启动顺序」）：要在 MCP 连接之后调用，白名单校验依赖实际可用的工具。
  * 收成一个函数，main 与 Ink 测试走同一段装配代码。
+ * 这方法 要保证加载的skill的工具都是可用的状态
  */
 export function bootstrapSkills(options: {
   registry: ToolRegistry;
@@ -78,8 +79,11 @@ export function bootstrapSkills(options: {
   homeDir: string;
   builtinDir?: string;
 }): { manager: SkillManager; warnings: string[]; summary: string } {
+  // 获取可用的工具
   const availableTools = new Set([...options.registry.list().map((tool) => tool.name), ...options.registry.lazyNames(), LOAD_SKILL_TOOL]);
+  // 加载返回 所有已有并且可用的skills
   const loaded = loadSkills({ workDir: options.workDir, homeDir: options.homeDir, availableTools, builtinDir: options.builtinDir });
+  //加载非冲突的skill 命令
   const { accepted, warnings } = registerSkillCommands(options.commands, loaded.skills);
   const manager = new SkillManager(accepted);
   options.registry.register(createLoadSkillTool(manager));

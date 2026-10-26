@@ -94,7 +94,7 @@ export function loadSkills(options: {
     [join(options.workDir, ".mewcode", "skills"), "project"],
   ];
   for (const [dir, source] of layers) {
-    for (const skill of scanDir(dir, source, warnings)) byName.set(skill.name, skill);
+    for (const skill of scanDir(dir, source, warnings))byName .set(skill.name, skill);
   }
 
   for (const [name, skill] of byName) {

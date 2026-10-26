@@ -1,0 +1,2 @@
+- 项目级记忆存放在项目根目录的 .mewcode/memory/，用户级记忆存放在用户主目录的 .mewcode/memory/。（memory-storage-paths.md，项目知识）
+- 当前项目全部使用中文。（project-uses-chinese.md，项目知识）
